@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# IDE
+.idea/
+
+# 数据库文件（本地数据不同步）
+data/ai_tutor.db
+data/chroma/
+
+# 上传文件（本地演示数据不同步）
+uploads/*
+!uploads/demo_courseware.txt
+
+# Vendor（第三方库本地拷贝，用 pip 管理）
+vendor/
+
+# 根目录数据库文件
+data.db
+
+# 环境变量（包含密钥）
+ENV
+.env
+
+# macOS
+.DS_Store
+
+# 临时文件
+*.tmp
+*.qlpreview/
+*.native-preview.pdf
