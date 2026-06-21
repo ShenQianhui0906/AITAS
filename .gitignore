@@ -14,24 +14,8 @@ vendor/
 # IDE
 .idea/
 
-# Runtime data — everything under storage/ is local data not synced to Git
-storage/db/**
-storage/uploads/**
-storage/processed/**
-storage/previews/**
-storage/vectorstores/**
-storage/tmp/**
-
-# Keep directory structure in Git
-!storage/db/.gitkeep
-!storage/uploads/.gitkeep
-!storage/uploads/coursewares/.gitkeep
-!storage/processed/.gitkeep
-!storage/processed/coursewares/.gitkeep
-!storage/previews/.gitkeep
-!storage/previews/coursewares/.gitkeep
-!storage/vectorstores/.gitkeep
-!storage/vectorstores/chroma/.gitkeep
+# Runtime data — all created by config.ensure_storage_dirs() on startup
+storage/
 !storage/tmp/.gitkeep
 
 # Legacy data directories (migrated to storage/)
