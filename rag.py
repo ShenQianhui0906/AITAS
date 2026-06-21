@@ -26,10 +26,10 @@ _chroma_lock = threading.Lock()
 
 
 def _get_chroma_dir() -> Path:
-    root = Path(__file__).resolve().parent
-    chroma_dir = root / "data" / "chroma"
-    chroma_dir.mkdir(parents=True, exist_ok=True)
-    return chroma_dir
+    from config import CHROMA_DIR
+
+    CHROMA_DIR.mkdir(parents=True, exist_ok=True)
+    return CHROMA_DIR
 
 
 def _get_embeddings():

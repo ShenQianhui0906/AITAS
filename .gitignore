@@ -7,21 +7,36 @@ build/
 .venv/
 venv/
 
+# Node / frontend
+node_modules/
+vendor/
+
 # IDE
 .idea/
 
-# 数据库文件（本地数据不同步）
-data/ai_tutor.db
-data/chroma/
+# Runtime data — everything under storage/ is local data not synced to Git
+storage/db/*
+storage/uploads/*
+storage/processed/*
+storage/previews/*
+storage/vectorstores/*
+storage/tmp/*
 
-# 上传文件（本地演示数据不同步）
-uploads/*
-!uploads/demo_courseware.txt
+# Keep directory structure in Git
+!storage/db/.gitkeep
+!storage/uploads/.gitkeep
+!storage/uploads/coursewares/.gitkeep
+!storage/processed/.gitkeep
+!storage/processed/coursewares/.gitkeep
+!storage/previews/.gitkeep
+!storage/previews/coursewares/.gitkeep
+!storage/vectorstores/.gitkeep
+!storage/vectorstores/chroma/.gitkeep
+!storage/tmp/.gitkeep
 
-# Vendor（第三方库本地拷贝，用 pip 管理）
-vendor/
-
-# 根目录数据库文件
+# Legacy data directories (migrated to storage/)
+data/
+uploads/
 data.db
 
 # 环境变量（包含密钥）

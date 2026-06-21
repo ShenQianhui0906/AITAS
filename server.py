@@ -25,15 +25,17 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlencode, urlparse
 
-
-ROOT_DIR = Path(__file__).resolve().parent
-STATIC_DIR = ROOT_DIR / "static"
-UPLOAD_DIR = ROOT_DIR / "uploads"
-DATA_DIR = ROOT_DIR / "data"
-DB_PATH = DATA_DIR / "ai_tutor.db"
-VENDOR_DIR = ROOT_DIR / "vendor"
-if VENDOR_DIR.exists():
-    sys.path.insert(0, str(VENDOR_DIR))
+# ---- centralised configuration ----
+from config import (
+    ROOT_DIR,
+    STATIC_DIR,
+    UPLOAD_DIR,
+    DB_DIR,
+    DB_PATH,
+    TMP_DIR,
+    CHROMA_DIR,
+    ensure_storage_dirs,
+)
 
 _ENV_FILE = ROOT_DIR / "ENV"
 if _ENV_FILE.exists():
@@ -122,11 +124,11 @@ def build_pptx_media_url(file_name, asset_name):
 
 
 def get_quicklook_preview_dir(file_path):
-    return UPLOAD_DIR / f"{file_path.name}.qlpreview"
+    return file_path.parent / f"{file_path.name}.qlpreview"
 
 
 def get_native_pdf_preview_path(file_path):
-    return UPLOAD_DIR / f"{file_path.name}{NATIVE_PREVIEW_SUFFIX}"
+    return file_path.parent / f"{file_path.name}{NATIVE_PREVIEW_SUFFIX}"
 
 
 def escape_applescript_text(value):
@@ -235,7 +237,7 @@ def ensure_native_pdf_preview(file_path):
                 except OSError:
                     continue
 
-                temp_target = UPLOAD_DIR / f".{target_path.name}.{secrets.token_hex(4)}.tmp"
+                temp_target = TMP_DIR / f".{target_path.name}.{secrets.token_hex(4)}.tmp"
                 if temp_target.exists():
                     temp_target.unlink(missing_ok=True)
                 shutil.copy2(temp_pdf, temp_target)
@@ -291,7 +293,7 @@ def ensure_quicklook_preview(file_path):
             if generated_dir is None or not (generated_dir / "Preview.html").exists():
                 return None
 
-            temp_target = UPLOAD_DIR / f".{target_dir.name}.{secrets.token_hex(4)}.tmp"
+            temp_target = TMP_DIR / f".{target_dir.name}.{secrets.token_hex(4)}.tmp"
             if temp_target.exists():
                 shutil.rmtree(temp_target, ignore_errors=True)
             shutil.copytree(generated_dir, temp_target)
@@ -307,7 +309,7 @@ def ensure_quicklook_preview(file_path):
 
 
 def delete_courseware_assets(stored_file_name):
-    if not stored_file_name or stored_file_name == "demo_courseware.txt":
+    if not stored_file_name:
         return
 
     file_path = UPLOAD_DIR / stored_file_name
@@ -317,11 +319,20 @@ def delete_courseware_assets(stored_file_name):
         else:
             file_path.unlink()
 
-    preview_dir = UPLOAD_DIR / f"{stored_file_name}.qlpreview"
+    # clean up entire courseware directory if empty
+    cw_dir = file_path.parent
+    while cw_dir != UPLOAD_DIR:
+        try:
+            cw_dir.rmdir()  # only deletes if empty
+        except OSError:
+            break
+        cw_dir = cw_dir.parent
+
+    preview_dir = get_quicklook_preview_dir(file_path)
     if preview_dir.exists():
         shutil.rmtree(preview_dir, ignore_errors=True)
 
-    native_preview = get_native_pdf_preview_path(UPLOAD_DIR / stored_file_name)
+    native_preview = get_native_pdf_preview_path(file_path)
     if native_preview.exists():
         native_preview.unlink(missing_ok=True)
 
@@ -2068,8 +2079,7 @@ def get_join_request(conn, class_id, student_id):
 
 
 def init_db():
-    DATA_DIR.mkdir(exist_ok=True)
-    UPLOAD_DIR.mkdir(exist_ok=True)
+    ensure_storage_dirs()
 
     conn = get_conn()
     conn.execute("PRAGMA journal_mode = WAL")
@@ -2368,17 +2378,20 @@ def seed_courseware(conn):
         return
     class_id = class_row["id"]
 
-    demo_file = UPLOAD_DIR / "demo_courseware.txt"
-    if not demo_file.exists():
-        demo_file.write_text(
-            "AI助教系统演示课件\n\n"
-            "1. 系统支持教师上传课件并统一管理。\n"
-            "2. 学生可以围绕课件内容进行学习和讨论。\n"
-            "3. AI问答界面当前为前端演示版，便于后续接入真实模型。\n",
-            encoding="utf-8",
-        )
+    demo_ext = ".txt"
+    demo_content = (
+        "AI助教系统演示课件\n\n"
+        "1. 系统支持教师上传课件并统一管理。\n"
+        "2. 学生可以围绕课件内容进行学习和讨论。\n"
+        "3. AI问答界面当前为前端演示版，便于后续接入真实模型。\n"
+    )
 
-    conn.execute(
+    # phase 1: insert with temp name to get courseware id
+    temp_name = f"{secrets.token_hex(10)}{demo_ext}"
+    temp_path = TMP_DIR / temp_name
+    temp_path.write_text(demo_content, encoding="utf-8")
+
+    cursor = conn.execute(
         """
         INSERT INTO coursewares (
             title, course_name, description, original_file_name, stored_file_name, uploaded_by, uploaded_at, class_id
@@ -2389,11 +2402,25 @@ def seed_courseware(conn):
             "软件工程课程设计",
             "用于演示课件上传、浏览和前端问答入口的示例课件。",
             "demo_courseware.txt",
-            "demo_courseware.txt",
+            temp_name,
             teacher["id"],
             now_iso(),
             class_id,
         ),
+    )
+    courseware_id = cursor.lastrowid
+
+    # phase 2: move to final nested location
+    final_dir = UPLOAD_DIR / "coursewares" / str(courseware_id) / "original"
+    final_dir.mkdir(parents=True, exist_ok=True)
+    final_name = f"source{demo_ext}"
+    final_path = final_dir / final_name
+    shutil.move(str(temp_path), str(final_path))
+    final_stored = f"coursewares/{courseware_id}/original/{final_name}"
+
+    conn.execute(
+        "UPDATE coursewares SET stored_file_name = ? WHERE id = ?",
+        (final_stored, courseware_id),
     )
     conn.commit()
 
@@ -2883,7 +2910,10 @@ class AppHandler(BaseHTTPRequestHandler):
 
     def serve_courseware_preview(self, relative_path):
         relative_path = unquote(relative_path).lstrip("/")
-        stored_name = relative_path.split("/", 1)[0]
+        # stored_name may be multi-level (e.g. coursewares/42/original/source.pdf)
+        # the last segment after the final "/" is the display-name hint
+        parts = relative_path.rsplit("/", 1)
+        stored_name = parts[0] if len(parts) == 2 else relative_path
         file_path = (UPLOAD_DIR / stored_name).resolve()
         if not str(file_path).startswith(str(UPLOAD_DIR.resolve())) or not file_path.exists():
             self.send_error(HTTPStatus.NOT_FOUND, "File not found")
@@ -4214,22 +4244,40 @@ class AppHandler(BaseHTTPRequestHandler):
         uploaded_by = user["id"] if user["role"] == "teacher" else class_row["teacher_id"]
 
         original_name = os.path.basename(file_item["filename"])
-        safe_name = f"{secrets.token_hex(10)}_{original_name}"
-        target_path = UPLOAD_DIR / safe_name
-        with open(target_path, "wb") as output:
+        ext = Path(original_name).suffix
+
+        # ---- phase 1: save to temp, insert DB to get courseware_id ----
+        temp_name = f"{secrets.token_hex(10)}{ext}"
+        temp_path = TMP_DIR / temp_name
+        with open(temp_path, "wb") as output:
             output.write(file_item["data"])
-        if target_path.suffix.lower() in QUICKLOOK_PREVIEW_SUFFIXES:
-            if ensure_native_pdf_preview(target_path) is None:
-                ensure_quicklook_preview(target_path)
+
         cursor = conn.execute(
             """
             INSERT INTO coursewares (
                 title, course_name, description, original_file_name, stored_file_name, uploaded_by, uploaded_at, class_id
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (title, course_name, description, original_name, safe_name, uploaded_by, now_iso(), class_id),
+            (title, course_name, description, original_name, temp_name, uploaded_by, now_iso(), class_id),
         )
         courseware_id = cursor.lastrowid
+
+        # ---- phase 2: move to final location ----
+        final_dir = UPLOAD_DIR / "coursewares" / str(courseware_id) / "original"
+        final_dir.mkdir(parents=True, exist_ok=True)
+        final_name = f"source{ext}"
+        final_path = final_dir / final_name
+        shutil.move(str(temp_path), str(final_path))
+        stored_file_name = f"coursewares/{courseware_id}/original/{final_name}"
+
+        conn.execute(
+            "UPDATE coursewares SET stored_file_name = ? WHERE id = ?",
+            (stored_file_name, courseware_id),
+        )
+
+        if final_path.suffix.lower() in QUICKLOOK_PREVIEW_SUFFIXES:
+            if ensure_native_pdf_preview(final_path) is None:
+                ensure_quicklook_preview(final_path)
         conn.commit()
         row = conn.execute(
             """
