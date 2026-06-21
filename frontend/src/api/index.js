@@ -109,3 +109,7 @@ export const ragApi = {
   index(body) { return request('/api/rag/index', { method: 'POST', body }) },
   clear(params) { return request(buildPath('/api/rag/messages', params), { method: 'DELETE' }) },
 }
+
+export const agentApi = {
+  ask(body) { return request('/api/ai/agent', { method: 'POST', body }) },
+}

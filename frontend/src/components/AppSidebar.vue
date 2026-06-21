@@ -70,7 +70,7 @@ const icons = {
   evaluations: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20 5.5 23l1.5-7.5L2 10.8l7.8-.9L12 3l2.2 6.9 7.8.9-5 4.7 1.5 7.5Z"></path></svg>`,
   survey: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 11h9"></path><path d="M9 16h9"></path><path d="M9 6h9"></path><path d="m5 6 .5.5L7 5"></path><path d="m5 11 .5.5L7 10"></path><path d="m5 16 .5.5L7 15"></path></svg>`,
   discussions: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v10H8l-4 4Z"></path></svg>`,
-  messages: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v11H8l-4 4Z"></path></svg>`,
+  messages: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"></path><polyline points="22,6 12,13 2,6"></polyline></svg>`,
   rag: `<svg viewBox="0 0 24 24" aria-hidden="true"><ellipse cx="12" cy="5" rx="9" ry="3"></ellipse><path d="M3 5v4c0 1.66 4.03 3 9 3s9-1.34 9-3V5"></path><path d="M3 9v4c0 1.66 4.03 3 9 3s9-1.34 9-3V9"></path><path d="M3 13v4c0 1.66 4.03 3 9 3s9-1.34 9-3v-4"></path></svg>`,
 }
 

@@ -23,7 +23,7 @@
         <template v-if="auth.role === 'teacher' || auth.role === 'admin'">
           <div class="button-row">
             <button class="primary-btn" @click="buildIndex">构建索引</button>
-            <button class="secondary-btn" @click="buildIndex">刷新索引</button>
+            <button class="secondary-btn" @click="refreshIndex">刷新索引</button>
           </div>
         </template>
       </article>
@@ -115,9 +115,19 @@ async function load() {
 async function buildIndex() {
   try {
     app.setStatus('正在构建知识库索引...')
-    const data = await ragApi.build({ class_id: app.currentClassId })
+    const data = await ragApi.index({ class_id: app.currentClassId })
     app.ragIndexStatus = data.status || 'ready'
     app.setStatus('知识库索引已构建。')
+  } catch (error) {
+    app.setStatus(error.message, 'error')
+  }
+}
+
+async function refreshIndex() {
+  try {
+    app.setStatus('正在刷新知识库索引...')
+    await ragApi.index({ class_id: app.currentClassId })
+    app.setStatus('知识库索引已刷新。')
   } catch (error) {
     app.setStatus(error.message, 'error')
   }

@@ -62,6 +62,9 @@ export const useAppStore = defineStore('app', {
     ragDraft: '',
     ragIndexStatus: null,
 
+    // Global Agent
+    agentMessages: [],
+
     // Discussions
     activeDiscussionId: null,
   }),
