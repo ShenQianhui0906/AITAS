@@ -15,12 +15,12 @@ vendor/
 .idea/
 
 # Runtime data — everything under storage/ is local data not synced to Git
-storage/db/*
-storage/uploads/*
-storage/processed/*
-storage/previews/*
-storage/vectorstores/*
-storage/tmp/*
+storage/db/**
+storage/uploads/**
+storage/processed/**
+storage/previews/**
+storage/vectorstores/**
+storage/tmp/**
 
 # Keep directory structure in Git
 !storage/db/.gitkeep

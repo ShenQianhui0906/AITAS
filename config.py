@@ -50,14 +50,9 @@ CHROMA_DIR = VECTORSTORE_DIR / "chroma"
 TMP_DIR = STORAGE_DIR / "tmp"
 
 # ---------------------------------------------------------------------------
-# Static front-end (legacy, kept for compatibility)
+# Static front-end — Vue 3 build output
 # ---------------------------------------------------------------------------
-VITE_DIST_DIR = ROOT_DIR / "frontend" / "dist"
-STATIC_DIR = (
-    VITE_DIST_DIR
-    if (VITE_DIST_DIR / "index.html").exists()
-    else (ROOT_DIR / "static")
-)
+STATIC_DIR = ROOT_DIR / "frontend" / "dist"
 
 # ---------------------------------------------------------------------------
 # Boot helpers
