@@ -43,7 +43,7 @@ def handle_rag_routes(path: str, method: str, headers: dict, body: bytes, query_
             class_id = int(query_params.get("class_id", [""])[0])
         except (ValueError, TypeError):
             return {"error": "班级编号不合法。"}, HTTPStatus.BAD_REQUEST
-        from rag import get_index_status
+        from backend.services.rag_service import get_index_status
         status = get_index_status(class_id)
         return {
             "status": "ready" if status.get("indexed") else "not_built",
@@ -69,7 +69,7 @@ def handle_rag_routes(path: str, method: str, headers: dict, body: bytes, query_
             if not coursewares:
                 return {"error": "该班级暂无课件，无法构建索引。"}, HTTPStatus.BAD_REQUEST
 
-            from rag import build_class_index_async
+            from backend.services.rag_service import build_class_index_async
             from backend.services.text_service import extract_courseware_text
 
             upload_dir = STORAGE_DIR / "uploads" / "coursewares" / str(class_id) / "original"
