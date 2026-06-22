@@ -17,15 +17,13 @@
 
 - 所有业务数据保存在 `storage/db/ai_tutor.sqlite3`（旧版为 `data/ai_tutor.db`，首次启动自动迁移）。
 - 上传文件保存在 `storage/uploads/coursewares/{id}/original/`。
-- AI 问答当前通过智谱 `glm-4.7-flash` 调用，服务端需要配置环境变量 `BIGMODEL_API_KEY`（可在项目根目录 `ENV` 文件中配置，格式见 `ENV` 文件）。
-- 可选环境变量 `BIGMODEL_MODEL`，默认值为 `glm-4.7-flash`。
+- AI 问答当前通过 DeepSeek `deepseek-chat` 调用，服务端需要配置环境变量 `API_KEY`（可在项目根目录 `ENV` 文件中配置，格式见 `ENV` 文件）。
+- 可选环境变量 `MODEL_NAME`，默认值为 `deepseek-chat`。
 
 ## 启动方式
 
-### 使用模块化后端（推荐）
-
 ```bash
-BIGMODEL_API_KEY=你的密钥 python3 backend/main.py
+API_KEY=你的密钥 python3 backend/main.py
 ```
 
 启动后访问 [http://127.0.0.1:8080](http://127.0.0.1:8080)。
@@ -34,14 +32,6 @@ BIGMODEL_API_KEY=你的密钥 python3 backend/main.py
 
 ```bash
 python3 backend/main.py --port 8001
-```
-
-### 兼容旧版入口
-
-旧版单体 `server.py` 仍保留可用：
-
-```bash
-BIGMODEL_API_KEY=你的密钥 python3 server.py --port 8080
 ```
 
 ## 演示账号
@@ -84,6 +74,7 @@ AITAS/
 │   ├── services/              # 业务逻辑层
 │   │   ├── ai_service.py      #    智谱GLM API 调用
 │   │   ├── text_service.py    #    课件文本提取
+│   │   ├── rag_service.py     #    RAG 知识库索引构建与状态管理
 │   │   ├── sync_service.py    #    SSE 实时同步
 │   │   ├── preview_service.py #    课件预览生成（AppleScript + QuickLook）
 │   │   └── file_server.py     #    静态文件/预览服务
@@ -101,7 +92,5 @@ AITAS/
 ├── static/                    # 旧版前端（兼容过渡）
 ├── vendor/pypdf/              # 内置 pypdf 依赖
 ├── ENV                        # 环境变量配置
-├── server.py                  # 旧版单体入口（保留兼容）
-├── rag.py                     # RAG 索引脚本
 └── README.md
 ```
