@@ -4,6 +4,7 @@ Sync service — SSE-based real-time update notifications.
 from __future__ import annotations
 
 import threading
+import time
 
 SYNC_CONDITION = threading.Condition()
 SYNC_CURSOR = 0
@@ -31,8 +32,8 @@ def wait_for_user_update(user_id: int, cursor: int, timeout: float = 25.0) -> in
     with SYNC_CONDITION:
         while get_user_sync_cursor(user_id) <= cursor:
             if deadline is None:
-                deadline = SYNC_CONDITION._time() + timeout
-            remaining = deadline - SYNC_CONDITION._time()
+                deadline = time.monotonic() + timeout
+            remaining = deadline - time.monotonic()
             if remaining <= 0:
                 return None
             SYNC_CONDITION.wait(timeout=min(remaining, 5.0))

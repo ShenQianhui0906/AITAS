@@ -34,6 +34,7 @@
           <path d="M15 17h5l-1.4-1.4A2 2 0 0 1 18 14.2V11a6 6 0 1 0-12 0v3.2a2 2 0 0 1-.6 1.4L4 17h5"></path>
           <path d="M9 17a3 3 0 0 0 6 0"></path>
         </svg>
+        <span v-if="unreadTotal > 0" class="bell-badge">{{ unreadTotal > 99 ? '99+' : unreadTotal }}</span>
       </button>
     </div>
   </header>
@@ -51,6 +52,12 @@
 </template>
 
 <script setup>
+import { computed } from 'vue'
+import { useAppStore } from '../store/app'
+
+const appStore = useAppStore()
+const unreadTotal = computed(() => appStore.unreadNotificationCount)
+
 defineProps({
   kicker: { type: String, default: '' },
   title: { type: String, default: '' },

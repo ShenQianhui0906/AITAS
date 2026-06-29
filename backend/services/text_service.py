@@ -30,6 +30,31 @@ def extract_xml_text(xml_bytes: bytes) -> str:
     return normalize_text_content("\n".join(texts))
 
 
+def extract_docx_text(xml_bytes: bytes) -> str:
+    """Extract DOCX text while keeping Word runs from one paragraph together."""
+    try:
+        root = ET.fromstring(xml_bytes)
+    except ET.ParseError:
+        return ""
+    paragraphs: list[str] = []
+    for paragraph in root.iter():
+        if paragraph.tag.rsplit("}", 1)[-1] != "p":
+            continue
+        parts: list[str] = []
+        for node in paragraph.iter():
+            local_name = node.tag.rsplit("}", 1)[-1]
+            if local_name == "t" and node.text:
+                parts.append(node.text)
+            elif local_name == "tab":
+                parts.append("\t")
+            elif local_name in {"br", "cr"}:
+                parts.append("\n")
+        paragraph_text = "".join(parts).strip()
+        if paragraph_text:
+            paragraphs.append(paragraph_text)
+    return normalize_text_content("\n".join(paragraphs))
+
+
 def extract_pdf_text_fallback(file_path: Path) -> str:
     data = file_path.read_bytes()
     chunks = []
@@ -83,7 +108,7 @@ def extract_courseware_text(file_path: Path) -> str:
     if suffix == ".docx":
         try:
             with zipfile.ZipFile(file_path) as archive:
-                return extract_xml_text(archive.read("word/document.xml"))
+                return extract_docx_text(archive.read("word/document.xml"))
         except (KeyError, zipfile.BadZipFile, OSError):
             return ""
 

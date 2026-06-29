@@ -60,14 +60,26 @@ def create_courseware(
     title: str,
     course_name: str,
     description: str,
-    original_name: str,
-    file_data: bytes,
+    file_obj,           # Flask FileStorage or (original_name, file_data) tuple
     uploaded_by: int,
     class_id: int,
+    upload_dir=None,    # Path: uploads root
     ensure_native_pdf_preview_fn=None,
     ensure_quicklook_preview_fn=None,
 ) -> dict:
+    # Accept Flask FileStorage object
+    if hasattr(file_obj, 'filename') and hasattr(file_obj, 'read'):
+        original_name = file_obj.filename or "untitled"
+        file_data = file_obj.read()
+    elif isinstance(file_obj, (tuple, list)) and len(file_obj) == 2:
+        original_name, file_data = file_obj
+    else:
+        raise ValueError("file_obj must be Flask FileStorage or (name, bytes) tuple")
+
     ext = Path(original_name).suffix
+
+    if upload_dir is None:
+        upload_dir = UPLOAD_DIR
 
     # Phase 1: save to temp, insert DB
     temp_name = f"{secrets.token_hex(10)}{ext}"
@@ -82,7 +94,7 @@ def create_courseware(
     courseware_id = cursor.lastrowid
 
     # Phase 2: move to final location
-    final_dir = UPLOAD_DIR / "coursewares" / str(courseware_id) / "original"
+    final_dir = upload_dir / "coursewares" / str(courseware_id) / "original"
     final_dir.mkdir(parents=True, exist_ok=True)
     final_name = f"source{ext}"
     final_path = final_dir / final_name

@@ -110,6 +110,13 @@ def delete_user(conn: sqlite3.Connection, user_id: int) -> dict:
         "SELECT stored_file_name FROM coursewares WHERE uploaded_by = ?", (user_id,)
     ).fetchall()
     stored_file_names = [r["stored_file_name"] for r in courseware_rows]
+    assignment_file_rows = conn.execute(
+        "SELECT f.stored_file_name FROM assignment_submission_files f "
+        "JOIN assignment_submissions s ON s.id = f.submission_id "
+        "WHERE s.student_id = ?",
+        (user_id,),
+    ).fetchall()
+    assignment_file_names = [row["stored_file_name"] for row in assignment_file_rows]
 
     # Collect affected user IDs for notifications
     affected = set()
@@ -169,6 +176,24 @@ def delete_user(conn: sqlite3.Connection, user_id: int) -> dict:
     conn.execute("DELETE FROM evaluations WHERE student_id = ?", (user_id,))
     conn.execute("DELETE FROM ai_chat_messages WHERE user_id = ?", (user_id,))
     conn.execute("DELETE FROM rag_chat_messages WHERE user_id = ?", (user_id,))
+    conn.execute("DELETE FROM agent_chat_messages WHERE user_id = ?", (user_id,))
+    submission_ids = [
+        row["id"] for row in conn.execute(
+            "SELECT id FROM assignment_submissions WHERE student_id = ?",
+            (user_id,),
+        ).fetchall()
+    ]
+    for submission_id in submission_ids:
+        conn.execute(
+            "DELETE FROM assignment_ai_grading_records WHERE submission_id = ?",
+            (submission_id,),
+        )
+        conn.execute(
+            "DELETE FROM assignment_submission_files WHERE submission_id = ?",
+            (submission_id,),
+        )
+    conn.execute("DELETE FROM assignment_submissions WHERE student_id = ?", (user_id,))
+    conn.execute("UPDATE assignment_submissions SET graded_by = NULL WHERE graded_by = ?", (user_id,))
     conn.execute("DELETE FROM discussion_replies WHERE author_id = ?", (user_id,))
     conn.execute("DELETE FROM discussions WHERE author_id = ?", (user_id,))
     conn.execute("DELETE FROM coursewares WHERE uploaded_by = ?", (user_id,))
@@ -177,6 +202,7 @@ def delete_user(conn: sqlite3.Connection, user_id: int) -> dict:
 
     return {
         "stored_file_names": stored_file_names,
+        "assignment_file_names": assignment_file_names,
         "affected_user_ids": [uid for uid in affected if uid != user_id],
     }
 

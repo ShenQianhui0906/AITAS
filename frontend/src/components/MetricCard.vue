@@ -10,11 +10,13 @@
 
 <script setup>
 import { computed } from 'vue'
+import { navigationIcon } from '../utils/navigationIcons'
 
 const props = defineProps({
   value: { type: [Number, String], default: null },
   label: { type: String, required: true },
   tone: { type: String, default: 'blue' },
+  icon: { type: String, default: '' },
 })
 
 const displayValue = computed(() => (props.value == null ? '-' : String(props.value)))
@@ -26,5 +28,7 @@ const icons = {
   red: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 6 8 6 8-6"></path><path d="M4 6h16v12H4z"></path></svg>`,
 }
 
-const iconSvg = computed(() => icons[props.tone] || icons.blue)
+const iconSvg = computed(() => (
+  props.icon ? navigationIcon(props.icon) : (icons[props.tone] || icons.blue)
+))
 </script>

@@ -34,3 +34,6 @@ ENV
 *.tmp
 *.qlpreview/
 *.native-preview.pdf
+
+# 文档工作区
+.doc_work/

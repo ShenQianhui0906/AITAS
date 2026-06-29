@@ -25,6 +25,12 @@ const routes = [
     component: () => import('../pages/CoursewaresPage.vue'),
   },
   {
+    path: '/assignments',
+    name: 'assignments',
+    component: () => import('../pages/AssignmentsPage.vue'),
+    meta: { roles: ['teacher', 'student'] },
+  },
+  {
     path: '/evaluations',
     name: 'evaluations',
     component: () => import('../pages/EvaluationsPage.vue'),
@@ -50,6 +56,16 @@ const routes = [
     path: '/rag',
     name: 'rag',
     component: () => import('../pages/RagPage.vue'),
+  },
+  {
+    path: '/quizzes',
+    name: 'quizzes',
+    component: () => import('../pages/QuizPage.vue'),
+  },
+  {
+    path: '/notifications',
+    name: 'notifications',
+    component: () => import('../pages/NotificationsPage.vue'),
   },
 ]
 

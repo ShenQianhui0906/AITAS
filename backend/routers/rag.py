@@ -1,183 +1,155 @@
 """
-RAG Chat router — /api/rag/*
+RAG Chat Blueprint — /api/rag/*
 """
 from __future__ import annotations
 
 import json
-from http import HTTPStatus
-from pathlib import Path
 
-from backend.config import MAX_AI_CONTEXT_CHARS, MAX_AI_HISTORY_MESSAGES, STORAGE_DIR
+from flask import Blueprint, request, jsonify, g
+
+from backend.config import MAX_AI_HISTORY_MESSAGES, MODEL_NAME, STORAGE_DIR
 from backend.database import get_conn
-from backend.middleware.auth import require_user_from_header
+from backend.middleware.auth import require_auth
 from backend.models.ai_chat import list_rag_messages, add_rag_message, clear_rag_messages
 from backend.models.courseware import list_coursewares
 from backend.models.access import user_can_access_class
 from backend.services.ai_service import call_bigmodel_chat
+from backend.services.rag_service import get_index_status
+from backend.services.rag_answer_service import (
+    build_knowledge_messages,
+    retrieve_class_knowledge,
+)
 
+rag_bp = Blueprint("rag", __name__)
 
-def _query_rag(collection, query_text: str, n_results: int = 4):
-    """Query ChromaDB collection and return relevant chunks."""
+@rag_bp.route("/api/rag/status", methods=["GET"])
+@require_auth
+def rag_status():
     try:
-        results = collection.query(query_texts=[query_text], n_results=n_results)
-        docs = results.get("documents", [[]])[0]
-        metas = results.get("metadatas", [[]])[0]
-        return [
-            {"content": doc, "source": (meta.get("source", "") if meta else "")}
-            for doc, meta in zip(docs, metas)
-        ]
-    except Exception:
-        return []
+        class_id = int(request.args.get("class_id", ""))
+    except (TypeError, ValueError):
+        return jsonify({"error": "班级编号不合法。"}), 400
+
+    status = get_index_status(class_id)
+    return jsonify({
+        "status": "ready" if status.get("indexed") else "not_built",
+        "building": status.get("building", False),
+        "chunk_count": status.get("chunk_count", 0),
+        "error": status.get("error"),
+        "model_name": MODEL_NAME,
+    }), 200
 
 
-def handle_rag_routes(path: str, method: str, headers: dict, body: bytes, query_params: dict) -> tuple[dict | list, int] | None:
-    if not path.startswith("/api/rag"):
-        return None
-    user, error = require_user_from_header(headers.get("Authorization"))
-    if error:
-        return {"error": error}, HTTPStatus.UNAUTHORIZED
+@rag_bp.route("/api/rag/index", methods=["POST"])
+@require_auth
+def build_rag_index():
+    data = request.get_json(silent=True) or {}
+    try:
+        class_id = int(data.get("class_id"))
+    except (TypeError, ValueError):
+        return jsonify({"error": "班级编号不合法。"}), 400
 
-    # GET /api/rag/status
-    if method == "GET" and path == "/api/rag/status":
-        try:
-            class_id = int(query_params.get("class_id", [""])[0])
-        except (ValueError, TypeError):
-            return {"error": "班级编号不合法。"}, HTTPStatus.BAD_REQUEST
-        from backend.services.rag_service import get_index_status
-        status = get_index_status(class_id)
-        return {
-            "status": "ready" if status.get("indexed") else "not_built",
-            "building": status.get("building", False),
-            "chunk_count": status.get("chunk_count", 0),
-            "error": status.get("error"),
-        }, HTTPStatus.OK
+    conn = get_conn()
+    try:
+        if not user_can_access_class(conn, g.current_user, class_id):
+            return jsonify({"error": "当前账号无权访问该班级。"}), 403
 
-    # POST /api/rag/index
-    if method == "POST" and path == "/api/rag/index":
-        data = json.loads(body) if body else {}
-        try:
-            class_id = int(data.get("class_id"))
-        except (TypeError, ValueError):
-            return {"error": "班级编号不合法。"}, HTTPStatus.BAD_REQUEST
+        coursewares = list_coursewares(conn, "c.class_id = ?", [class_id], lambda fn, title: "")
+        if not coursewares:
+            return jsonify({"error": "该班级暂无课件，无法构建索引。"}), 400
 
-        conn = get_conn()
-        try:
-            if not user_can_access_class(conn, user, class_id):
-                return {"error": "当前账号无权访问该班级。"}, HTTPStatus.FORBIDDEN
+        from backend.services.rag_service import build_class_index_async
+        from backend.services.text_service import extract_courseware_text
 
-            coursewares = list_coursewares(conn, "c.class_id = ?", [class_id], lambda fn, title: "")
-            if not coursewares:
-                return {"error": "该班级暂无课件，无法构建索引。"}, HTTPStatus.BAD_REQUEST
+        upload_dir = STORAGE_DIR / "uploads"
+        build_class_index_async(class_id, coursewares, upload_dir, extract_courseware_text)
+        return jsonify({"message": "索引构建任务已启动。"}), 200
+    finally:
+        conn.close()
 
-            from backend.services.rag_service import build_class_index_async
-            from backend.services.text_service import extract_courseware_text
 
-            upload_dir = STORAGE_DIR / "uploads" / "coursewares" / str(class_id) / "original"
-            build_class_index_async(class_id, coursewares, upload_dir, extract_courseware_text)
-            return {"message": "索引构建任务已启动。"}, HTTPStatus.OK
-        finally:
-            conn.close()
+@rag_bp.route("/api/rag/messages", methods=["GET"])
+@require_auth
+def get_rag_messages():
+    try:
+        class_id = int(request.args.get("class_id", ""))
+    except (TypeError, ValueError):
+        return jsonify({"error": "班级编号不合法。"}), 400
 
-    # GET /api/rag/messages
-    if method == "GET" and path == "/api/rag/messages":
-        try:
-            class_id = int(query_params.get("class_id", [""])[0])
-        except (ValueError, TypeError):
-            return {"error": "班级编号不合法。"}, HTTPStatus.BAD_REQUEST
+    conn = get_conn()
+    try:
+        if not user_can_access_class(conn, g.current_user, class_id):
+            return jsonify({"error": "当前账号无权查看班级。"}), 403
+        messages = list_rag_messages(conn, class_id, g.current_user["id"])
+        return jsonify({"messages": messages}), 200
+    finally:
+        conn.close()
 
-        conn = get_conn()
-        try:
-            if not user_can_access_class(conn, user, class_id):
-                return {"error": "当前账号无权查看班级。"}, HTTPStatus.FORBIDDEN
-            messages = list_rag_messages(conn, user["id"], class_id)
-            return {"messages": messages}, HTTPStatus.OK
-        finally:
-            conn.close()
 
-    # POST /api/rag/ask
-    if method == "POST" and path == "/api/rag/ask":
-        data = json.loads(body) if body else {}
-        try:
-            class_id = int(data.get("class_id"))
-            user_message = (data.get("question") or "").strip()
-        except (TypeError, ValueError):
-            return {"error": "请求参数不合法。"}, HTTPStatus.BAD_REQUEST
-        if not user_message:
-            return {"error": "请输入问题。"}, HTTPStatus.BAD_REQUEST
+@rag_bp.route("/api/rag/ask", methods=["POST"])
+@require_auth
+def rag_ask():
+    data = request.get_json(silent=True) or {}
+    try:
+        class_id = int(data.get("class_id"))
+        user_message = (data.get("question") or "").strip()
+    except (TypeError, ValueError):
+        return jsonify({"error": "请求参数不合法。"}), 400
+    if not user_message:
+        return jsonify({"error": "请输入问题。"}), 400
 
-        conn = get_conn()
-        try:
-            if not user_can_access_class(conn, user, class_id):
-                return {"error": "当前账号无权访问该班级。"}, HTTPStatus.FORBIDDEN
+    conn = get_conn()
+    try:
+        if not user_can_access_class(conn, g.current_user, class_id):
+            return jsonify({"error": "当前账号无权访问该班级。"}), 403
 
-            # Try ChromaDB RAG
-            sources = []
-            knowledge_text = ""
-            try:
-                from backend.config import CHROMA_DIR
-                import chromadb
+        retrieval = retrieve_class_knowledge(conn, class_id, user_message)
+        related_coursewares = retrieval["related_coursewares"]
+        message_sources = retrieval["sources"]
 
-                client = chromadb.PersistentClient(path=str(CHROMA_DIR))
-                collection_name = f"class_{class_id}"
-                try:
-                    collection = client.get_collection(collection_name)
-                except Exception:
-                    collection = None
+        history = list_rag_messages(conn, class_id, g.current_user["id"])
+        recent = history[-MAX_AI_HISTORY_MESSAGES:] if len(history) > MAX_AI_HISTORY_MESSAGES else history
 
-                if collection:
-                    chunks = _query_rag(collection, user_message)
-                    knowledge_text = "\n\n".join(c["content"] for c in chunks)
-                    sources = [c["source"] for c in chunks if c["source"]]
-            except Exception:
-                pass
+        messages = build_knowledge_messages(
+            user_message, retrieval["knowledge_text"], recent
+        )
 
-            # Build messages for AI
-            history = list_rag_messages(conn, user["id"], class_id)
-            recent = history[:-1] if len(history) > MAX_AI_HISTORY_MESSAGES else history
+        reply_text = call_bigmodel_chat(messages)
 
-            system_prompt = (
-                "你是AITAS（AI教学助手），专为课堂提供智能化知识检索支持。"
-                "请根据以下知识库内容回答学生的问题。如果知识库中没有相关信息，"
-                "请根据你的知识诚实作答，并标注信息来源。\n"
-            )
-            if knowledge_text:
-                system_prompt += f"\n【知识库内容】\n{knowledge_text[:MAX_AI_CONTEXT_CHARS]}"
+        # Store message source info. When retrieval finds no courseware, keep an explicit model-source note.
+        sources_json = json.dumps(message_sources, ensure_ascii=False)
+        add_rag_message(conn, class_id, g.current_user["id"], "user", user_message)
+        add_rag_message(
+            conn, class_id, g.current_user["id"], "assistant", reply_text,
+            sources_json,
+        )
+        conn.commit()
 
-            messages = [{"role": "system", "content": system_prompt}]
-            for msg in recent:
-                role = "assistant" if msg["role"] == "assistant" else "user"
-                messages.append({"role": role, "content": msg["content"]})
-            messages.append({"role": "user", "content": user_message})
+        updated_messages = list_rag_messages(conn, class_id, g.current_user["id"])
+        return jsonify({
+            "reply": reply_text,
+            "sources": message_sources,
+            "related_coursewares": related_coursewares,
+            "messages": updated_messages,
+            "retriever_error": retrieval["retriever_error"],
+        }), 200
+    finally:
+        conn.close()
 
-            # Call AI
-            reply_text = call_bigmodel_chat(messages)
 
-            # Save messages
-            add_rag_message(conn, user["id"], class_id, "user", user_message)
-            add_rag_message(
-                conn, user["id"], class_id, "assistant", reply_text,
-                json.dumps(sources, ensure_ascii=False) if sources else None,
-            )
-            conn.commit()
-
-            # Return full message list so frontend can display
-            updated_messages = list_rag_messages(conn, user["id"], class_id)
-            return {"reply": reply_text, "sources": sources, "messages": updated_messages}, HTTPStatus.OK
-        finally:
-            conn.close()
-
-    # DELETE /api/rag/messages
-    if method == "DELETE" and path == "/api/rag/messages":
-        try:
-            class_id = int(query_params.get("class_id", [""])[0])
-        except (ValueError, TypeError):
-            return {"error": "班级编号不合法。"}, HTTPStatus.BAD_REQUEST
-        conn = get_conn()
-        try:
-            clear_rag_messages(conn, user["id"], class_id)
-            conn.commit()
-            return {"message": "对话已清空。"}, HTTPStatus.OK
-        finally:
-            conn.close()
-
-    return None
+@rag_bp.route("/api/rag/messages", methods=["DELETE"])
+@require_auth
+def clear_rag_messages_route():
+    try:
+        class_id = int(request.args.get("class_id", ""))
+    except (TypeError, ValueError):
+        return jsonify({"error": "班级编号不合法。"}), 400
+    conn = get_conn()
+    try:
+        if not user_can_access_class(conn, g.current_user, class_id):
+            return jsonify({"error": "当前账号无权访问该班级。"}), 403
+        clear_rag_messages(conn, class_id, g.current_user["id"])
+        conn.commit()
+        return jsonify({"message": "对话已清空。"}), 200
+    finally:
+        conn.close()

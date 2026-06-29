@@ -65,6 +65,95 @@ def ensure_column(conn: sqlite3.Connection, table_name: str, column_name: str, d
         conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}")
 
 
+def ensure_notifications_table_supports_all_types(conn: sqlite3.Connection) -> None:
+    """Remove the legacy notification-type CHECK while preserving existing rows."""
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'notifications'"
+    ).fetchone()
+    table_sql = (row["sql"] if row else "") or ""
+    if "CHECK(typeIN" not in table_sql.replace(" ", ""):
+        return
+
+    conn.execute("DROP TABLE IF EXISTS notifications_new")
+    conn.execute("""
+        CREATE TABLE notifications_new (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            recipient_id INTEGER NOT NULL,
+            type TEXT NOT NULL,
+            title TEXT NOT NULL,
+            body TEXT NOT NULL DEFAULT '',
+            ref_type TEXT,
+            ref_id INTEGER,
+            is_read INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(recipient_id) REFERENCES users(id)
+        )
+    """)
+    conn.execute("""
+        INSERT INTO notifications_new
+            (id, recipient_id, type, title, body, ref_type, ref_id, is_read, created_at)
+        SELECT id, recipient_id, type, title, body, ref_type, ref_id, is_read, created_at
+        FROM notifications
+    """)
+    conn.execute("DROP TABLE notifications")
+    conn.execute("ALTER TABLE notifications_new RENAME TO notifications")
+
+
+def ensure_messages_foreign_keys(conn: sqlite3.Connection) -> None:
+    """Add missing FOREIGN KEY constraints to the messages table."""
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'messages'"
+    ).fetchone()
+    table_sql = (row["sql"] if row else "") or ""
+    # Skip if FKs are already present (check for FOREIGN KEY keyword)
+    if "FOREIGN KEY" in table_sql.upper():
+        return
+
+    conn.execute("DROP TABLE IF EXISTS messages_new")
+    conn.execute("""
+        CREATE TABLE messages_new (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            sender_id INTEGER NOT NULL,
+            receiver_id INTEGER NOT NULL,
+            body TEXT NOT NULL,
+            is_read INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            thread_id INTEGER,
+            FOREIGN KEY(sender_id) REFERENCES users(id),
+            FOREIGN KEY(receiver_id) REFERENCES users(id),
+            FOREIGN KEY(thread_id) REFERENCES conversation_threads(id) ON DELETE SET NULL
+        )
+    """)
+    conn.execute("""
+        INSERT INTO messages_new
+            (id, sender_id, receiver_id, body, is_read, created_at, thread_id)
+        SELECT id, sender_id, receiver_id, body, is_read, created_at, thread_id
+        FROM messages
+    """)
+    conn.execute("DROP TABLE messages")
+    conn.execute("ALTER TABLE messages_new RENAME TO messages")
+
+
+def migrate_class_rubrics_to_assignment_rubrics(conn: sqlite3.Connection) -> None:
+    """Copy the former class-wide rubric to each existing assignment, then remove it."""
+    legacy = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table' "
+        "AND name = 'class_grading_rubrics'"
+    ).fetchone()
+    if not legacy:
+        return
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO assignment_grading_rubrics
+            (assignment_id, content, source, source_refs, created_at, updated_at)
+        SELECT a.id, r.content, r.source, r.source_refs, r.created_at, r.updated_at
+        FROM class_grading_rubrics r
+        JOIN assignments a ON a.class_id = r.class_id
+        """
+    )
+    conn.execute("DROP TABLE class_grading_rubrics")
+
+
 def recreate_users_table_with_admin_role(conn: sqlite3.Connection):
     columns = {row["name"] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
     student_number_select = "student_number" if "student_number" in columns else "NULL AS student_number"
@@ -286,6 +375,134 @@ def init_db():
             FOREIGN KEY(class_id) REFERENCES classes(id),
             FOREIGN KEY(user_id) REFERENCES users(id)
         );
+
+        CREATE TABLE IF NOT EXISTS agent_chat_messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            class_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            role TEXT NOT NULL CHECK(role IN ('user', 'assistant')),
+            content TEXT NOT NULL,
+            intent TEXT NOT NULL,
+            sources TEXT NOT NULL DEFAULT '[]',
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(class_id) REFERENCES classes(id),
+            FOREIGN KEY(user_id) REFERENCES users(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS assignments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            class_id INTEGER NOT NULL,
+            teacher_id INTEGER NOT NULL,
+            title TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            due_at TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(class_id) REFERENCES classes(id),
+            FOREIGN KEY(teacher_id) REFERENCES users(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS assignment_submissions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            assignment_id INTEGER NOT NULL,
+            student_id INTEGER NOT NULL,
+            content_html TEXT NOT NULL DEFAULT '',
+            submitted_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            score REAL,
+            feedback TEXT NOT NULL DEFAULT '',
+            graded_at TEXT,
+            graded_by INTEGER,
+            UNIQUE(assignment_id, student_id),
+            FOREIGN KEY(assignment_id) REFERENCES assignments(id),
+            FOREIGN KEY(student_id) REFERENCES users(id),
+            FOREIGN KEY(graded_by) REFERENCES users(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS assignment_submission_files (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            submission_id INTEGER NOT NULL,
+            original_file_name TEXT NOT NULL,
+            stored_file_name TEXT NOT NULL,
+            mime_type TEXT NOT NULL,
+            file_size INTEGER NOT NULL DEFAULT 0,
+            is_inline INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(submission_id) REFERENCES assignment_submissions(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS assignment_grading_rubrics (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            assignment_id INTEGER NOT NULL UNIQUE,
+            content TEXT NOT NULL,
+            source TEXT NOT NULL CHECK(source IN (
+                'knowledge_base', 'history', 'assignment', 'teacher'
+            )),
+            source_refs TEXT NOT NULL DEFAULT '[]',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(assignment_id) REFERENCES assignments(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS assignment_ai_grading_records (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            submission_id INTEGER NOT NULL,
+            score REAL NOT NULL,
+            evaluation TEXT NOT NULL,
+            evidence TEXT NOT NULL,
+            feedback TEXT NOT NULL,
+            rubric_snapshot TEXT NOT NULL,
+            rubric_source TEXT NOT NULL,
+            model_name TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('draft', 'confirmed', 'discarded')),
+            generated_at TEXT NOT NULL,
+            resolved_at TEXT,
+            FOREIGN KEY(submission_id) REFERENCES assignment_submissions(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS quiz_templates (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            class_id INTEGER NOT NULL,
+            teacher_id INTEGER NOT NULL,
+            title TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            courseware_ids TEXT NOT NULL DEFAULT '[]',
+            questions_json TEXT NOT NULL DEFAULT '[]',
+            total_score REAL NOT NULL DEFAULT 0,
+            is_published INTEGER NOT NULL DEFAULT 0,
+            due_at TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(class_id) REFERENCES classes(id),
+            FOREIGN KEY(teacher_id) REFERENCES users(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS quiz_submissions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            quiz_id INTEGER NOT NULL,
+            student_id INTEGER NOT NULL,
+            answers_json TEXT NOT NULL DEFAULT '[]',
+            score REAL,
+            ai_feedback TEXT,
+            submitted_at TEXT NOT NULL,
+            graded_at TEXT,
+            UNIQUE(quiz_id, student_id),
+            FOREIGN KEY(quiz_id) REFERENCES quiz_templates(id),
+            FOREIGN KEY(student_id) REFERENCES users(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS notifications (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            recipient_id INTEGER NOT NULL,
+            type TEXT NOT NULL,
+            title TEXT NOT NULL,
+            body TEXT NOT NULL DEFAULT '',
+            ref_type TEXT,
+            ref_id INTEGER,
+            is_read INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(recipient_id) REFERENCES users(id)
+        );
     """)
 
     # Migrations
@@ -296,6 +513,13 @@ def init_db():
     ensure_column(conn, "messages", "thread_id", "INTEGER")
     ensure_column(conn, "evaluations", "suitability", "INTEGER")
     ensure_column(conn, "evaluations", "practicality", "INTEGER")
+    ensure_column(conn, "assignment_submissions", "score", "REAL")
+    ensure_column(conn, "assignment_submissions", "feedback", "TEXT NOT NULL DEFAULT ''")
+    ensure_column(conn, "assignment_submissions", "graded_at", "TEXT")
+    ensure_column(conn, "assignment_submissions", "graded_by", "INTEGER")
+    ensure_notifications_table_supports_all_types(conn)
+    ensure_messages_foreign_keys(conn)
+    migrate_class_rubrics_to_assignment_rubrics(conn)
 
     # Indices
     conn.execute("""
@@ -309,6 +533,46 @@ def init_db():
     conn.execute("""
         CREATE INDEX IF NOT EXISTS idx_rag_chat_messages_class_user
         ON rag_chat_messages(class_id, user_id, id)
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_agent_chat_messages_class_user
+        ON agent_chat_messages(class_id, user_id, id)
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_assignments_class_due
+        ON assignments(class_id, due_at, id)
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_assignment_submissions_assignment_student
+        ON assignment_submissions(assignment_id, student_id, id)
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_assignment_submission_files_submission
+        ON assignment_submission_files(submission_id, id)
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_assignment_grading_rubrics_assignment
+        ON assignment_grading_rubrics(assignment_id)
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_assignment_ai_grading_submission
+        ON assignment_ai_grading_records(submission_id, generated_at, id)
+    """)
+    conn.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_assignment_ai_grading_active_draft
+        ON assignment_ai_grading_records(submission_id) WHERE status = 'draft'
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_quiz_templates_class
+        ON quiz_templates(class_id, is_published, id)
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_quiz_submissions_quiz_student
+        ON quiz_submissions(quiz_id, student_id, id)
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_notifications_recipient
+        ON notifications(recipient_id, is_read, created_at, id)
     """)
 
     # Seed data

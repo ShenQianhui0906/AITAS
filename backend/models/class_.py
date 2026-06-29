@@ -117,10 +117,43 @@ def delete_class(conn: sqlite3.Connection, class_id: int) -> dict:
     ).fetchall()
     affected_users = [r["user_id"] for r in member_rows]
 
+    assignment_ids = [
+        row["id"] for row in conn.execute(
+            "SELECT id FROM assignments WHERE class_id = ?", (class_id,)
+        ).fetchall()
+    ]
+
     # Cascade delete
     conn.execute("DELETE FROM class_members WHERE class_id = ?", (class_id,))
     conn.execute("DELETE FROM class_join_requests WHERE class_id = ?", (class_id,))
     conn.execute("DELETE FROM rag_chat_messages WHERE class_id = ?", (class_id,))
+    conn.execute("DELETE FROM agent_chat_messages WHERE class_id = ?", (class_id,))
+
+    for assignment_id in assignment_ids:
+        submission_ids = [
+            row["id"] for row in conn.execute(
+                "SELECT id FROM assignment_submissions WHERE assignment_id = ?",
+                (assignment_id,),
+            ).fetchall()
+        ]
+        for submission_id in submission_ids:
+            conn.execute(
+                "DELETE FROM assignment_ai_grading_records WHERE submission_id = ?",
+                (submission_id,),
+            )
+            conn.execute(
+                "DELETE FROM assignment_submission_files WHERE submission_id = ?",
+                (submission_id,),
+            )
+        conn.execute(
+            "DELETE FROM assignment_submissions WHERE assignment_id = ?",
+            (assignment_id,),
+        )
+        conn.execute(
+            "DELETE FROM assignment_grading_rubrics WHERE assignment_id = ?",
+            (assignment_id,),
+        )
+    conn.execute("DELETE FROM assignments WHERE class_id = ?", (class_id,))
 
     # Delete discussions and their replies
     discussion_rows = conn.execute(
@@ -134,7 +167,12 @@ def delete_class(conn: sqlite3.Connection, class_id: int) -> dict:
     conn.execute("DELETE FROM classes WHERE id = ?", (class_id,))
     conn.commit()
 
-    return {"stored_file_names": stored_files, "affected_user_ids": affected_users}
+    return {
+        "stored_file_names": stored_files,
+        "assignment_ids": assignment_ids,
+        "affected_user_ids": affected_users,
+        "message": "班级已删除。",
+    }
 
 
 def get_class_members(conn: sqlite3.Connection, class_id: int) -> list[dict]:
@@ -154,6 +192,33 @@ def get_class_members(conn: sqlite3.Connection, class_id: int) -> list[dict]:
         }
         for r in rows
     ]
+
+
+def get_pending_requests(conn: sqlite3.Connection, class_id: int) -> list[dict]:
+    """获取某班级的待审核入班申请"""
+    rows = conn.execute("""
+        SELECT r.id, r.class_id, r.student_id, r.status, r.requested_at,
+               u.username, u.display_name, u.student_number
+        FROM class_join_requests r
+        JOIN users u ON u.id = r.student_id
+        WHERE r.class_id = ? AND r.status = 'pending'
+        ORDER BY r.requested_at ASC
+    """, (class_id,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_available_students(conn: sqlite3.Connection, class_id: int) -> list[dict]:
+    """获取尚未加入某班级的学生列表"""
+    rows = conn.execute("""
+        SELECT u.id, u.username, u.display_name, u.student_number
+        FROM users u
+        WHERE u.role = 'student'
+          AND u.id NOT IN (
+              SELECT cm.user_id FROM class_members cm WHERE cm.class_id = ?
+          )
+        ORDER BY u.display_name
+    """, (class_id,)).fetchall()
+    return [dict(r) for r in rows]
 
 
 def add_class_member(conn: sqlite3.Connection, class_id: int, user_id: int) -> bool:

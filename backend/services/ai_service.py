@@ -3,12 +3,11 @@ AI Service — LLM API calls (智谱 GLM / BigModel).
 """
 from __future__ import annotations
 
-import json
 import os
-import urllib.error
-import urllib.request
 
-from backend.config import BIGMODEL_API_URL, BIGMODEL_MODEL
+import requests
+
+from backend.config import API_URL, MODEL_NAME
 
 
 def stringify_model_content(content) -> str:
@@ -49,43 +48,48 @@ def parse_bigmodel_error(payload) -> str | None:
     return None
 
 
-def call_bigmodel_chat(messages: list[dict]) -> str:
+def call_bigmodel_chat(
+    messages: list[dict], *, temperature: float = 0.3, max_tokens: int = 2048
+) -> str:
     """Call the BigModel chat API. Returns the assistant's response text.
     Raises RuntimeError on failure."""
-    api_key = os.environ.get("BIGMODEL_API_KEY", "").strip()
+    api_key = os.environ.get("API_KEY", "").strip()
     if not api_key:
-        raise RuntimeError("服务器未配置 BIGMODEL_API_KEY，暂时无法使用 AI 问答。")
+        raise RuntimeError("服务器未配置 API_KEY，暂时无法使用 AI 问答。")
 
     payload = {
-        "model": BIGMODEL_MODEL,
+        "model": MODEL_NAME,
         "messages": messages,
-        "temperature": 0.3,
-        "max_tokens": 2048,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
         "thinking": {"type": "disabled"},
     }
-    request = urllib.request.Request(
-        BIGMODEL_API_URL,
-        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {api_key}",
-        },
-        method="POST",
-    )
+    try:
+        response = requests.post(
+            API_URL,
+            json=payload,
+            headers={
+                "Accept": "application/json",
+                "Authorization": f"Bearer {api_key}",
+            },
+            timeout=90,
+        )
+    except requests.exceptions.Timeout as error:
+        raise RuntimeError("模型服务响应超时，请稍后重试。") from error
+    except requests.exceptions.RequestException as error:
+        raise RuntimeError("模型服务暂时不可用，请稍后再试。") from error
 
     try:
-        with urllib.request.urlopen(request, timeout=90) as response:
-            data = json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as error:
-        detail = error.read().decode("utf-8", errors="ignore")
-        try:
-            err_payload = json.loads(detail)
-        except json.JSONDecodeError:
-            err_payload = None
-        message = parse_bigmodel_error(err_payload) or f"模型服务调用失败（HTTP {error.code}）。"
-        raise RuntimeError(message) from error
-    except urllib.error.URLError as error:
-        raise RuntimeError("模型服务暂时不可用，请稍后再试。") from error
+        data = response.json()
+    except ValueError as error:
+        raise RuntimeError("模型返回格式异常，暂时无法生成回答。") from error
+
+    if response.status_code >= 400:
+        message = parse_bigmodel_error(data) or f"模型服务调用失败（HTTP {response.status_code}）。"
+        raise RuntimeError(message)
+
+    if not isinstance(data, dict):
+        raise RuntimeError("模型返回格式异常，暂时无法生成回答。")
 
     try:
         content = extract_bigmodel_answer(data["choices"][0]["message"])

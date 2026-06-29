@@ -31,13 +31,21 @@ def get_or_create_thread(
         (thread_id, user_a, visible_for_a, now_iso()),
     )
     conn.execute(
+        "UPDATE conversation_members SET visible = ? WHERE thread_id = ? AND user_id = ?",
+        (visible_for_a, thread_id, user_a),
+    )
+    conn.execute(
         "INSERT OR IGNORE INTO conversation_members (thread_id, user_id, visible, joined_at) VALUES (?, ?, ?, ?)",
         (thread_id, user_b, visible_for_b, now_iso()),
+    )
+    conn.execute(
+        "UPDATE conversation_members SET visible = ? WHERE thread_id = ? AND user_id = ?",
+        (visible_for_b, thread_id, user_b),
     )
     return thread_id
 
 
-def list_contacts(conn: sqlite3.Connection, user_id: int) -> list[dict]:
+def list_contacts(conn: sqlite3.Connection, user_id: int, class_id: int | None = None) -> list[dict]:
     """List all users the current user has messaged or shares a class with."""
     contact_ids = set()
 
@@ -50,13 +58,21 @@ def list_contacts(conn: sqlite3.Connection, user_id: int) -> list[dict]:
     """, (user_id, user_id)).fetchall()
     contact_ids.update(r["user_id"] for r in msg_rows)
 
-    # Users from shared classes
-    class_rows = conn.execute("""
-        SELECT DISTINCT cm2.user_id
-        FROM class_members cm1
-        JOIN class_members cm2 ON cm2.class_id = cm1.class_id
-        WHERE cm1.user_id = ? AND cm2.user_id != ?
-    """, (user_id, user_id)).fetchall()
+    # Users from shared classes (optionally scoped to class_id)
+    if class_id:
+        class_rows = conn.execute("""
+            SELECT DISTINCT cm2.user_id
+            FROM class_members cm1
+            JOIN class_members cm2 ON cm2.class_id = cm1.class_id
+            WHERE cm1.user_id = ? AND cm2.user_id != ? AND cm1.class_id = ?
+        """, (user_id, user_id, class_id)).fetchall()
+    else:
+        class_rows = conn.execute("""
+            SELECT DISTINCT cm2.user_id
+            FROM class_members cm1
+            JOIN class_members cm2 ON cm2.class_id = cm1.class_id
+            WHERE cm1.user_id = ? AND cm2.user_id != ?
+        """, (user_id, user_id)).fetchall()
     contact_ids.update(r["user_id"] for r in class_rows)
 
     if not contact_ids:
@@ -84,12 +100,16 @@ def list_conversations(conn: sqlite3.Connection, user_id: int) -> list[dict]:
 
     conversations = []
     for row in rows:
-        item = dict(row)
-        item["other_user"] = {
+        other = {
             "id": row["other_user_id"], "username": row["username"],
             "display_name": row["display_name"], "role": row["role"],
             "student_number": row["student_number"],
         }
+        item = dict(row)
+        item["id"] = row["thread_id"]
+        item["other_user"] = other
+        item["with_user_name"] = other["display_name"] or other["username"]
+        item["with_user_initial"] = (other["display_name"] or other["username"] or "?")[0].upper()
         item["last_message"] = _get_last_message(conn, row["thread_id"])
         item["unread_count"] = _get_unread_count(conn, row["thread_id"], user_id)
         conversations.append(item)

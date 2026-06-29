@@ -41,6 +41,7 @@
 
     <section class="admin-main-stack">
       <ClassDetailAdmin
+        v-if="app.currentClass"
         :current-class="app.currentClass"
         :members-data="membersData"
         @approve="handleApprove"
@@ -48,6 +49,7 @@
         @remove="handleRemoveMember"
         @add="handleAddMember"
       />
+      <EmptyState v-else icon="class" message="请在左侧选择班级，查看详情并审核入班申请" />
     </section>
 
     <SheetPanel
@@ -74,8 +76,11 @@
   <section v-else-if="auth.role === 'teacher'" class="teacher-class-layout">
     <aside class="teacher-class-sidebar">
       <article class="surface section-shell teacher-class-panel teacher-class-switcher">
-        <SectionTitle title="我的班级" />
-        <div class="button-row">
+        <div class="teacher-switcher-head">
+          <SectionTitle title="我的班级" />
+          <span class="count-badge">{{ app.classes.length }}</span>
+        </div>
+        <div class="button-row teacher-class-actions">
           <button class="primary-btn" @click="openCreateSheet">新建班级</button>
           <button v-if="app.currentClass" class="secondary-btn" @click="openEditSheet">编辑当前班级</button>
         </div>
@@ -96,7 +101,7 @@
               <small>{{ c.description || '暂无班级说明' }}</small>
             </div>
             <div class="row-actions">
-              <button class="secondary-btn slim-btn" @click="switchClass(c.id)">
+              <button class="secondary-btn slim-btn" :disabled="c.id === app.currentClass?.id" @click="switchClass(c.id)">
                 {{ c.id === app.currentClass?.id ? '当前班级' : '切换' }}
               </button>
             </div>
@@ -107,6 +112,7 @@
 
     <section class="teacher-class-main">
       <ClassDetailAdmin
+        v-if="app.currentClass"
         :current-class="app.currentClass"
         :members-data="membersData"
         @approve="handleApprove"
@@ -114,6 +120,7 @@
         @remove="handleRemoveMember"
         @add="handleAddMember"
       />
+      <EmptyState v-else icon="class" message="请选择班级，查看详情并审核入班申请" />
     </section>
 
     <SheetPanel
@@ -220,6 +227,13 @@ async function load() {
   loading.value = true
   try {
     await app.loadClasses()
+    // 管理员/教师端：未选择班级时自动选中第一个班级（优先选有待审申请的）
+    if ((auth.role === 'admin' || auth.role === 'teacher') && !app.currentClass && app.classes.length) {
+      const pending = app.classes.find(c => c.pending_request_count > 0)
+      const target = pending || app.classes[0]
+      app.currentClassId = target.id
+      app.persistCurrentClass()
+    }
     if (app.currentClass) {
       membersData.value = await classesApi.members(app.currentClass.id)
     }

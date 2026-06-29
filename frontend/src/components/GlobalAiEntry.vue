@@ -1,9 +1,7 @@
 <template>
   <div class="gai-shell">
-
     <!-- ===== Message Stream (scrollable) ===== -->
     <div class="gai-stream" ref="streamEl">
-
       <!-- Empty / welcome state -->
       <div v-if="!app.agentMessages.length" class="gai-welcome">
         <div class="gai-welcome-icon">✦</div>
@@ -41,6 +39,21 @@
                   <time>{{ msg.time }}</time>
                 </div>
                 <div class="gai-rich-text" v-html="renderRichText(msg.content)"></div>
+                <div v-if="messageSources(msg).length" class="rag-sources">
+                  <span class="rag-sources-label">消息来源：</span>
+                  <template v-for="source in messageSources(msg)" :key="sourceKey(source)">
+                    <a
+                      v-if="isCoursewareSource(source)"
+                      :href="source.viewer_url"
+                      target="_blank"
+                      class="rag-source-chip rag-source-link"
+                    >{{ sourceText(source) }}</a>
+                    <span
+                      v-else
+                      :class="['rag-source-chip', isModelSource(source) ? 'rag-source-note' : '']"
+                    >{{ sourceText(source) }}</span>
+                  </template>
+                </div>
               </div>
             </template>
 
@@ -71,6 +84,15 @@
 
     <!-- ===== Sticky Input Bar ===== -->
     <div class="gai-input-bar">
+      <div class="gai-input-toolbar">
+        <button
+          class="ghost-btn gai-clear-btn"
+          type="button"
+          :disabled="loading || clearing || !app.agentMessages.length"
+          @click="clearMessages"
+        >{{ clearing ? '清除中...' : '清除问答记录' }}</button>
+      </div>
+
       <!-- Intent chips — shown only when typing -->
       <div v-if="draft.trim()" class="gai-chip-row">
         <button
@@ -114,7 +136,7 @@
 </template>
 
 <script setup>
-import { ref, computed, nextTick } from 'vue'
+import { ref, computed, nextTick, watch } from 'vue'
 import { useAppStore } from '../store/app'
 import { agentApi } from '../api'
 import { renderRichText } from '../utils/markdown'
@@ -123,9 +145,11 @@ const app = useAppStore()
 
 const draft = ref('')
 const loading = ref(false)
+const clearing = ref(false)
 const inputFocused = ref(false)
 const streamEl = ref(null)
 const inputEl = ref(null)
+const MODEL_SOURCE_TEXT = '知识库中未记录相关问题，该回答为大模型生成'
 
 const intents = [
   { key: 'qa',       icon: '📖', label: '课程问答',   prompt: '请讲解这门课的核心概念。' },
@@ -173,6 +197,50 @@ function now() {
   return new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
 }
 
+function messageTime(message) {
+  if (!message.created_at) return message.time || now()
+  const value = new Date(message.created_at.replace(' ', 'T'))
+  if (Number.isNaN(value.getTime())) return message.created_at
+  return value.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+}
+
+function normalizeMessages(messages = []) {
+  return messages.map(message => ({ ...message, time: messageTime(message) }))
+}
+
+function messageSources(message) {
+  const raw = message?.sources
+  if (!raw) return []
+  if (Array.isArray(raw)) return raw
+  try {
+    const parsed = JSON.parse(raw)
+    return Array.isArray(parsed) ? parsed : []
+  } catch {
+    return []
+  }
+}
+
+function isCoursewareSource(source) {
+  return typeof source === 'object' && source && source.viewer_url
+}
+
+function isModelSource(source) {
+  return typeof source === 'object' && source?.type === 'model_generated'
+}
+
+function sourceText(source) {
+  if (typeof source === 'string') return source
+  if (!source || typeof source !== 'object') return MODEL_SOURCE_TEXT
+  if (source.course_name && source.title) return `${source.course_name} · ${source.title}`
+  return source.title || source.course_name || source.label || MODEL_SOURCE_TEXT
+}
+
+function sourceKey(source) {
+  if (typeof source === 'string') return source
+  if (source?.courseware_id) return `courseware-${source.courseware_id}`
+  return `${source?.type || 'source'}-${sourceText(source)}`
+}
+
 function scrollToBottom() {
   nextTick(() => {
     if (streamEl.value) streamEl.value.scrollTop = streamEl.value.scrollHeight
@@ -190,38 +258,52 @@ async function handleSend() {
   loading.value = true
 
   try {
-    const data = await agentApi.ask({ class_id: app.currentClassId, message: text, intent })
+    const data = await agentApi.ask({ class_id: app.currentClassId, message: text })
+    app.agentMessages = normalizeMessages(data.messages || [])
+  } catch (error) {
     app.agentMessages.push({
       role: 'assistant',
-      content: data.reply || '抱歉，暂时无法回答。',
-      intent: data.intent || intent,
-      time: now(),
-    })
-  } catch {
-    app.agentMessages.push({
-      role: 'assistant',
-      content: buildFallback(text, intent),
+      content: `抱歉，这次没有生成回答。${error.message || '请稍后重试。'}`,
       intent,
       time: now(),
     })
-    app.setStatus('后端接口尚未就绪，当前显示模拟回复。', 'error')
+    app.setStatus(error.message || '回答生成失败，请稍后重试。', 'error')
   } finally {
     loading.value = false
     scrollToBottom()
   }
 }
 
-function buildFallback(q, intent) {
-  const map = {
-    qa:       `收到课程问答请求：「${q}」\n\n> ⚠️ 当前为模拟回复。后端就绪后 AI 将检索课件知识库为你精准解答。\n\n可先在「课件」页面查看相关章节内容。`,
-    summary:  `收到课件总结请求：「${q}」\n\n> ⚠️ 当前为模拟回复。功能就绪后将自动提取课件全文并生成结构化摘要。`,
-    exercise: `收到练习题请求：「${q}」\n\n> ⚠️ 当前为模拟回复。功能就绪后将基于课件内容自动生成题目。`,
-    homework: `收到作业查询：「${q}」\n\n> ⚠️ 当前为模拟回复。功能就绪后可查询作业列表与截止日期。`,
-    history:  `收到学习记录查询：「${q}」\n\n> ⚠️ 当前为模拟回复。功能就绪后将展示你的完整学习轨迹。`,
-    advice:   `收到学习建议请求：「${q}」\n\n> ⚠️ 当前为模拟回复。功能就绪后 AI 将根据你的数据提供个性化建议。`,
+async function loadMessages() {
+  if (!app.currentClassId) {
+    app.agentMessages = []
+    return
   }
-  return map[intent] || map.qa
+  try {
+    const data = await agentApi.messages({ class_id: app.currentClassId })
+    app.agentMessages = normalizeMessages(data.messages || [])
+    scrollToBottom()
+  } catch (error) {
+    app.setStatus(error.message, 'error')
+  }
 }
 
-defineExpose({ clear: () => { app.agentMessages = [] } })
+async function clearMessages() {
+  if (!app.currentClassId || clearing.value) return
+  clearing.value = true
+  try {
+    await agentApi.clear({ class_id: app.currentClassId })
+    app.agentMessages = []
+    draft.value = ''
+    app.setStatus('首页问答记录已清除。')
+  } catch (error) {
+    app.setStatus(error.message || '清除问答记录失败。', 'error')
+  } finally {
+    clearing.value = false
+  }
+}
+
+watch(() => app.currentClassId, loadMessages, { immediate: true })
+
+defineExpose({ clear: clearMessages })
 </script>

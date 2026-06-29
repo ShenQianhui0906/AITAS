@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import {
   classesApi, coursewaresApi, evaluationsApi, discussionsApi,
   messagesApi, aiApi, ragApi, dashboardApi, usersApi,
+  notificationApi,
 } from '../api'
 
 function sleep(ms) {
@@ -67,6 +68,16 @@ export const useAppStore = defineStore('app', {
 
     // Discussions
     activeDiscussionId: null,
+
+    // Quizzes
+    quizList: [],
+    activeQuizId: null,
+
+    // Notifications
+    unreadNotificationCount: 0,
+    notificationPollTimer: null,
+    notificationRefreshInFlight: false,
+    notificationCountInitialized: false,
   }),
 
   getters: {
@@ -81,19 +92,25 @@ export const useAppStore = defineStore('app', {
         { id: 'overview', label: '总览' },
         { id: 'classes', label: '班级' },
         { id: 'coursewares', label: '课件' },
+        { id: 'assignments', label: '作业' },
+        { id: 'quizzes', label: '测验' },
         { id: 'rag', label: '知识库' },
         { id: 'evaluations', label: '反馈' },
         { id: 'discussions', label: '讨论' },
         { id: 'messages', label: '私信' },
+        { id: 'notifications', label: '通知' },
       ],
       student: [
         { id: 'overview', label: '总览' },
         { id: 'classes', label: '班级' },
         { id: 'coursewares', label: '课件' },
+        { id: 'assignments', label: '作业' },
+        { id: 'quizzes', label: '测验' },
         { id: 'rag', label: '知识库' },
         { id: 'survey', label: '反馈' },
         { id: 'discussions', label: '讨论' },
         { id: 'messages', label: '私信' },
+        { id: 'notifications', label: '通知' },
       ],
     }),
 
@@ -170,7 +187,10 @@ export const useAppStore = defineStore('app', {
         const controller = new AbortController()
         this.messageSyncAbortController = controller
         try {
-          const data = await messagesApi.events({ cursor: this.messageEventCursor, _signal: controller.signal })
+          const data = await messagesApi.events(
+            { cursor: this.messageEventCursor },
+            { signal: controller.signal },
+          )
           if (!this.messageSyncEnabled || router.currentRoute?.value?.name !== 'messages') break
           if (typeof data.cursor === 'number') this.messageEventCursor = data.cursor
           if (data.changed) await this.syncMessagesSilently()
@@ -199,16 +219,19 @@ export const useAppStore = defineStore('app', {
         messagesApi.contacts({ class_id: this.currentClassId }),
         messagesApi.conversations(),
       ])
-      this.users = contactsData.contacts
-      this.conversations = conversationsData.conversations
-      const visibleUsers = this.conversations.map((c) => c.user)
-      if (!visibleUsers.find((u) => u.id === this.activeConversationId)) {
-        this.activeConversationId = visibleUsers[0]?.id || null
-      }
-      const target = this.conversations.find((c) => c.user.id === this.activeConversationId)?.user || this.users[0] || null
-      if (target) {
-        const threadData = await messagesApi.thread(target.id)
-        this.threadMessages = threadData.messages
+      this.users = contactsData.contacts || []
+      this.conversations = conversationsData.conversations || []
+      if (this.activeConversationId) {
+        try {
+          const threadData = await messagesApi.thread(this.activeConversationId)
+          this.threadMessages = threadData.messages || []
+          const activeConversation = this.conversations.find(
+            (conversation) => conversation.id === this.activeConversationId,
+          )
+          if (activeConversation) activeConversation.unread_count = 0
+        } catch {
+          this.threadMessages = []
+        }
       } else {
         this.threadMessages = []
       }
@@ -218,6 +241,38 @@ export const useAppStore = defineStore('app', {
     async loadAiMessages(coursewareId) {
       const data = await aiApi.messages({ courseware_id: coursewareId })
       this.qaMessages = data.messages
+    },
+
+    // Notifications
+    async refreshUnreadCount() {
+      if (this.notificationRefreshInFlight) return
+      this.notificationRefreshInFlight = true
+      try {
+        const data = await notificationApi.unreadCount()
+        const nextCount = data.count || 0
+        const newCount = nextCount - this.unreadNotificationCount
+        this.unreadNotificationCount = nextCount
+        if (this.notificationCountInitialized && newCount > 0) {
+          this.setStatus(`收到 ${newCount} 条新通知`, 'ok')
+        }
+        this.notificationCountInitialized = true
+      } catch { /* silent */ } finally {
+        this.notificationRefreshInFlight = false
+      }
+    },
+    startNotificationPolling() {
+      if (this.notificationPollTimer) return
+      this.refreshUnreadCount()
+      this.notificationPollTimer = setInterval(() => {
+        this.refreshUnreadCount()
+      }, 5000)
+    },
+    stopNotificationPolling() {
+      if (this.notificationPollTimer) {
+        clearInterval(this.notificationPollTimer)
+        this.notificationPollTimer = null
+      }
+      this.notificationCountInitialized = false
     },
   },
 })

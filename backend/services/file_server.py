@@ -1,14 +1,16 @@
 """
-Static file server — handles /, /static/*, /preview/*, /uploads/*, /preview-quicklook/*, /preview-media
+Static file server — Flask version: handles /static/*, /preview/*, /uploads/*,
+/preview-quicklook/*, /preview-media
 """
 from __future__ import annotations
 
 import mimetypes
 import re
 import zipfile
-from http import HTTPStatus
 from pathlib import Path
-from urllib.parse import unquote
+from urllib.parse import unquote, quote
+
+from flask import Flask, request, send_from_directory, Response, abort
 
 from backend.config import STATIC_DIR, UPLOAD_DIR, QUICKLOOK_PREVIEW_SUFFIXES
 from backend.utils.file_utils import get_display_file_title
@@ -20,157 +22,105 @@ from backend.services.preview_service import (
 )
 
 
-def _send_file(file_path: Path, download_name: str = "",
-               inline: bool = False, handler=None) -> None:
-    """Send a file response through the HTTP handler."""
-    if handler is None:
-        return
+def _make_file_response(file_path: Path, download_name: str = "",
+                        inline: bool = False) -> Response:
+    """Send a file as a Flask response."""
     guessed_type, _ = mimetypes.guess_type(str(file_path))
     content_type = guessed_type or "application/octet-stream"
-    data = file_path.read_bytes()
-    handler.send_response(HTTPStatus.OK)
-    handler.send_header("Content-Type", content_type)
-    handler.send_header("Content-Length", str(len(data)))
+    disposition_type = "inline" if inline else "attachment"
+
+    safe_stem = re.sub(r"[^A-Za-z0-9_-]+", "_", Path(download_name).stem).strip("._-") or "preview"
+    safe_suffix = Path(download_name).suffix
+    fallback_name = f"{safe_stem}{safe_suffix}" if download_name else None
+
+    response = Response(file_path.read_bytes(), content_type=content_type)
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+
     if download_name:
-        safe_stem = re.sub(r"[^A-Za-z0-9_-]+", "_", Path(download_name).stem).strip("._-") or "preview"
-        safe_suffix = Path(download_name).suffix
-        fallback_name = f"{safe_stem}{safe_suffix}"
-        from urllib.parse import quote
-        disposition_type = "inline" if inline else "attachment"
-        handler.send_header(
-            "Content-Disposition",
-            f'{disposition_type}; filename="{fallback_name}"; filename*=UTF-8\'\'{quote(download_name)}',
+        response.headers["Content-Disposition"] = (
+            f'{disposition_type}; filename="{fallback_name}"; '
+            f"filename*=UTF-8''{quote(download_name)}"
         )
-    handler.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
-    handler.send_header("Pragma", "no-cache")
-    handler.send_header("Expires", "0")
-    handler.end_headers()
-    handler.wfile.write(data)
+    return response
 
 
-def _send_html(content: str, handler) -> None:
-    data = content.encode("utf-8")
-    handler.send_response(HTTPStatus.OK)
-    handler.send_header("Content-Type", "text/html; charset=utf-8")
-    handler.send_header("Content-Length", str(len(data)))
-    handler.end_headers()
-    handler.wfile.write(data)
+def register_static_routes(app: Flask) -> None:
+    """Register all static file serving routes on the Flask app."""
 
-
-def _send_bytes(data: bytes, content_type: str, handler) -> None:
-    handler.send_response(HTTPStatus.OK)
-    handler.send_header("Content-Type", content_type)
-    handler.send_header("Content-Length", str(len(data)))
-    handler.end_headers()
-    handler.wfile.write(data)
-
-
-def try_serve_static(path: str, handler) -> bool:
-    """Try to serve a static file or preview or upload. Returns True if handled."""
-    # --- SPA fallback: /, /index.html ---
-    if path in ("", "/", "/index.html"):
-        file_path = STATIC_DIR / "index.html"
-        if file_path.exists():
-            _send_file(file_path, handler=handler)
-        else:
-            _send_html("<h1>AITAS</h1><p>Frontend not built. Run <code>cd frontend && npm run build</code></p>", handler)
-        return True
-
-    # --- /static/* ---
-    if path.startswith("/static/") or path.startswith("/assets/"):
-        relative = path.lstrip("/")
-        file_path = (STATIC_DIR / relative).resolve()
+    # ── /static/* and /assets/* ──
+    @app.route("/static/<path:filename>")
+    @app.route("/assets/<path:filename>")
+    def serve_static(filename: str):
+        file_path = (STATIC_DIR / request.path.lstrip("/")).resolve()
         if not str(file_path).startswith(str(STATIC_DIR.resolve())):
-            _send_html("<h1>403 Forbidden</h1>", handler)
-        elif file_path.exists():
-            _send_file(file_path, handler=handler)
-        else:
-            handler.send_error(HTTPStatus.NOT_FOUND, "File not found")
-        return True
+            abort(403)
+        if not file_path.exists():
+            abort(404)
+        return send_from_directory(str(STATIC_DIR), str(file_path.relative_to(STATIC_DIR)))
 
-    # --- /preview/{stored_name}/{display_name} ---
-    if path.startswith("/preview/"):
-        relative = unquote(path[len("/preview/"):]).lstrip("/")
+    # ── /preview/<stored_name>/<display_name> ──
+    @app.route("/preview/<path:subpath>")
+    def serve_preview(subpath: str):
+        relative = unquote(subpath).lstrip("/")
         parts = relative.rsplit("/", 1)
         stored_name = parts[0] if len(parts) == 2 else relative
         file_path = (UPLOAD_DIR / stored_name).resolve()
         if not str(file_path).startswith(str(UPLOAD_DIR.resolve())) or not file_path.exists():
-            handler.send_error(HTTPStatus.NOT_FOUND, "File not found")
-            return True
+            abort(404)
 
-        # PDF inline
         if file_path.suffix.lower() == ".pdf":
             display_name = f"{get_display_file_title(file_path)}.pdf"
-            _send_file(file_path, download_name=display_name, inline=True, handler=handler)
-            return True
+            return _make_file_response(file_path, download_name=display_name, inline=True)
 
-        # Presentation native PDF preview
         if file_path.suffix.lower() in QUICKLOOK_PREVIEW_SUFFIXES:
             native_preview = ensure_native_pdf_preview(file_path)
             if native_preview and native_preview.exists():
                 display_name = f"{get_display_file_title(file_path)}.pdf"
-                _send_file(native_preview, download_name=display_name, inline=True, handler=handler)
-                return True
+                return _make_file_response(native_preview, download_name=display_name, inline=True)
 
-        # Full HTML preview
-        _send_html(build_courseware_preview_html(file_path), handler)
-        return True
+        return build_courseware_preview_html(file_path), 200, {"Content-Type": "text/html; charset=utf-8"}
 
-    # --- /uploads/* ---
-    if path.startswith("/uploads/"):
-        relative = unquote(path[len("/uploads/"):]).lstrip("/")
-        file_path = (UPLOAD_DIR / relative).resolve()
+    # ── /uploads/<path:filename> ──
+    @app.route("/uploads/<path:filename>")
+    def serve_upload(filename: str):
+        file_path = (UPLOAD_DIR / filename).resolve()
         if not str(file_path).startswith(str(UPLOAD_DIR.resolve())) or not file_path.exists():
-            handler.send_error(HTTPStatus.NOT_FOUND, "File not found")
-        else:
-            _send_file(file_path, handler=handler)
-        return True
+            abort(404)
+        return _make_file_response(file_path)
 
-    # --- /preview-quicklook/* ---
-    if path.startswith("/preview-quicklook/"):
-        relative = unquote(path[len("/preview-quicklook/"):]).lstrip("/")
-        file_path = (UPLOAD_DIR / relative).resolve()
+    # ── /preview-quicklook/<path:filename> ──
+    @app.route("/preview-quicklook/<path:filename>")
+    def serve_quicklook(filename: str):
+        file_path = (UPLOAD_DIR / filename).resolve()
         if not str(file_path).startswith(str(UPLOAD_DIR.resolve())) or not file_path.exists():
-            handler.send_error(HTTPStatus.NOT_FOUND, "File not found")
-            return True
+            abort(404)
         preview_dir = ensure_quicklook_preview(file_path)
         preview_html = preview_dir / "Preview.html" if preview_dir else None
         if not preview_html or not preview_html.exists():
-            handler.send_error(HTTPStatus.NOT_FOUND, "Preview not found")
-            return True
-        _send_html(build_browser_ready_quicklook_html(file_path, preview_html), handler)
-        return True
+            abort(404)
+        html = build_browser_ready_quicklook_html(file_path, preview_html)
+        return html, 200, {"Content-Type": "text/html; charset=utf-8"}
 
-    # --- /preview-media?file=...&asset=... ---
-    if path.startswith("/preview-media"):
-        from urllib.parse import parse_qs, urlparse
-        query = parse_qs(handler.path.split("?", 1)[1] if "?" in handler.path else "")
-        file_name = (query.get("file", [""])[0] or "").strip()
-        asset_name = Path(query.get("asset", [""])[0] or "").name
+    # ── /preview-media?file=...&asset=... ──
+    @app.route("/preview-media")
+    def serve_preview_media():
+        file_name = (request.args.get("file", "") or "").strip()
+        asset_name = Path(request.args.get("asset", "") or "").name
         if not file_name or not asset_name:
-            handler.send_error(HTTPStatus.BAD_REQUEST, "Invalid preview asset request")
-            return True
+            abort(400)
 
         file_path = (UPLOAD_DIR / unquote(file_name)).resolve()
         if not str(file_path).startswith(str(UPLOAD_DIR.resolve())) or not file_path.exists():
-            handler.send_error(HTTPStatus.NOT_FOUND, "File not found")
-            return True
+            abort(404)
 
         media_path = f"ppt/media/{asset_name}"
         try:
             with zipfile.ZipFile(str(file_path)) as archive:
                 body = archive.read(media_path)
         except (OSError, zipfile.BadZipFile, KeyError):
-            handler.send_error(HTTPStatus.NOT_FOUND, "Preview asset not found")
-            return True
+            abort(404)
 
         content_type, _ = mimetypes.guess_type(asset_name)
-        _send_bytes(body, content_type or "application/octet-stream", handler)
-        return True
-
-    # --- /preview-listener (QuickLook resource) ---
-    if path.startswith("/preview-listener"):
-        handler.send_error(HTTPStatus.NOT_FOUND, "Not found")
-        return True
-
-    return False
+        return Response(body, content_type=content_type or "application/octet-stream")

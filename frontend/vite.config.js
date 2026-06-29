@@ -14,6 +14,18 @@ export default defineConfig({
         target: 'http://localhost:8080',
         changeOrigin: true,
       },
+      '/preview': {
+        target: 'http://localhost:8080',
+        changeOrigin: true,
+      },
+      '/preview-quicklook': {
+        target: 'http://localhost:8080',
+        changeOrigin: true,
+      },
+      '/preview-media': {
+        target: 'http://localhost:8080',
+        changeOrigin: true,
+      },
     },
   },
   build: {

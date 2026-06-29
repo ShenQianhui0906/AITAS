@@ -80,19 +80,25 @@ const pageMetaForRole = {
     overview: { kicker: '教师端', title: '教学总览', description: '班级与教学状态' },
     classes: { kicker: '教师端', title: '班级管理', description: '班级与成员' },
     coursewares: { kicker: '教师端', title: '课件管理', description: '班级课件' },
+    assignments: { kicker: '教师端', title: '作业管理', description: '发布作业与批改提交' },
+    quizzes: { kicker: '教师端', title: '智能测验', description: 'AI 生成测验与自动批改' },
     evaluations: { kicker: '教师端', title: '反馈分析', description: '课件反馈' },
     discussions: { kicker: '教师端', title: '讨论区', description: '主题交流' },
     rag: { kicker: '教师端', title: '知识库问答', description: '跨课件 RAG 智能问答' },
     messages: { kicker: '教师端', title: '消息中心', description: '会话与消息' },
+    notifications: { kicker: '教师端', title: '通知中心', description: '系统通知与提醒' },
   },
   student: {
     overview: { kicker: '学生端', title: '学习总览', description: '当前班级学习入口' },
     classes: { kicker: '学生端', title: '班级列表', description: '加入与切换班级' },
     coursewares: { kicker: '学生端', title: '课件学习', description: '课件阅读与问答' },
+    assignments: { kicker: '学生端', title: '作业中心', description: '查看与提交班级作业' },
+    quizzes: { kicker: '学生端', title: '在线测验', description: 'AI 测验与即时成绩' },
     survey: { kicker: '学生端', title: '使用反馈', description: '课件评价' },
     discussions: { kicker: '学生端', title: '讨论区', description: '课程讨论' },
     rag: { kicker: '学生端', title: '知识库问答', description: '跨课件 RAG 智能问答' },
     messages: { kicker: '学生端', title: '消息中心', description: '班级会话' },
+    notifications: { kicker: '学生端', title: '通知中心', description: '系统通知与提醒' },
   },
 }
 
@@ -154,6 +160,7 @@ async function onNavigate(routeId) {
 async function onLogout() {
   await auth.logout()
   app.stopMessagePolling()
+  app.stopNotificationPolling()
   app.closeSheet()
   app.aiDrawerOpen = false
   app.route = 'overview'
@@ -187,10 +194,12 @@ onMounted(async () => {
   if (auth.isLoggedIn) {
     app.route = route.name || 'overview'
     await app.loadClasses()
+    app.startNotificationPolling()
   }
 })
 
 onUnmounted(() => {
   app.stopMessagePolling()
+  app.stopNotificationPolling()
 })
 </script>

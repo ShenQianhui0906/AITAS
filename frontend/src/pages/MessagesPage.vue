@@ -63,7 +63,13 @@
     <section v-if="app.activeConversationId" class="chat-area messages-chat-window">
       <div class="chat-stream messages-chat-stream" ref="chatStream">
         <EmptyState v-if="!app.threadMessages.length" message="暂无消息记录" />
-        <ChatBubble v-for="(m, i) in app.threadMessages" :key="m.id || i" :message="m" />
+        <DirectMessageBubble
+          v-for="(m, i) in app.threadMessages"
+          :key="m.id || i"
+          :message="m"
+          :current-user-id="auth.user?.id"
+          :other-user-name="activeConversation?.with_user_name || '对方'"
+        />
       </div>
       <div class="prompt-shell messages-composer-shell">
         <form class="form-grid chat-composer" @submit.prevent="handleSend">
@@ -73,7 +79,9 @@
           </div>
           <div class="button-row prompt-actions">
             <button class="secondary-btn" type="button" @click="stopMessagePolling">停止同步</button>
-            <button class="primary-btn send-btn" type="submit">发送消息</button>
+            <button class="primary-btn send-btn" type="submit" :disabled="sending || !draft.trim()">
+              {{ sending ? '发送中…' : '发送消息' }}
+            </button>
           </div>
         </form>
         <small class="soft-label">消息通过长轮询自动同步</small>
@@ -87,7 +95,8 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted, nextTick, watch } from 'vue'
+import { computed, ref, onMounted, onUnmounted, nextTick, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import { useAuthStore } from '../store/auth'
 import { useAppStore } from '../store/app'
 import { messagesApi } from '../api'
@@ -95,15 +104,20 @@ import { roleLabel } from '../utils/markdown'
 import LoadingSpinner from '../components/LoadingSpinner.vue'
 import SectionTitle from '../components/SectionTitle.vue'
 import EmptyState from '../components/EmptyState.vue'
-import ChatBubble from '../components/ChatBubble.vue'
+import DirectMessageBubble from '../components/DirectMessageBubble.vue'
 
 const auth = useAuthStore()
 const app = useAppStore()
+const route = useRoute()
 const loading = ref(true)
+const sending = ref(false)
 const contacts = ref([])
 const activeUserId = ref(null)
 const draft = ref('')
 const chatStream = ref(null)
+const activeConversation = computed(() => (
+  app.conversations.find((conversation) => conversation.id === app.activeConversationId) || null
+))
 
 function contactList(users) {
   return (users || []).filter((u) => u.id !== auth.user?.id).map((u) => ({
@@ -114,14 +128,37 @@ function contactList(users) {
 
 async function load() {
   loading.value = true
+  if (!app.currentClassId) {
+    contacts.value = []
+    app.conversations = []
+    app.activeConversationId = null
+    app.threadMessages = []
+    loading.value = false
+    return
+  }
   try {
     const [usersData, convsData] = await Promise.all([
       messagesApi.contacts({ class_id: app.currentClassId }),
       messagesApi.conversations({ class_id: app.currentClassId }),
     ])
-    contacts.value = contactList(usersData.users)
+    contacts.value = contactList(usersData.contacts)
     app.setStatus('')
     app.conversations = convsData.conversations || []
+    const requestedConversationId = Number(route.query.cid || 0) || null
+    const nextConversationId = requestedConversationId || app.activeConversationId
+    const active = app.conversations.find((conversation) => conversation.id === nextConversationId)
+    if (active) {
+      app.activeConversationId = active.id
+      activeUserId.value = active.other_user?.id || null
+      const threadData = await messagesApi.thread(active.id)
+      app.threadMessages = threadData.messages || []
+      scrollToBottom()
+    } else {
+      app.activeConversationId = null
+      activeUserId.value = null
+      app.threadMessages = []
+    }
+    app.ensureMessagePolling()
   } catch (error) {
     app.setStatus(error.message, 'error')
   }
@@ -131,13 +168,21 @@ async function load() {
 async function startConversation(user) {
   activeUserId.value = user.id
   try {
-    const data = await messagesApi.createConversation({ with_user_id: user.id, class_id: app.currentClassId })
-    const conv = data.conversation
+    const data = await messagesApi.addConversation({ user_id: user.id })
+    // Backend returns { thread_id, other_user, messages: [] }
+    const conv = {
+      id: data.thread_id,
+      other_user: data.other_user,
+      with_user_name: data.other_user?.display_name || user.display_name,
+      with_user_initial: (data.other_user?.display_name || user.display_name || '?')[0].toUpperCase(),
+      last_message: null,
+      unread_count: 0,
+    }
     if (!app.conversations.find((c) => c.id === conv.id)) {
       app.conversations.push(conv)
     }
     app.activeConversationId = conv.id
-    await app.syncMessagesSilently(conv.id)
+    await app.syncMessagesSilently()
     app.ensureMessagePolling()
     scrollToBottom()
   } catch (error) {
@@ -147,21 +192,34 @@ async function startConversation(user) {
 
 async function openConversation(conv) {
   app.activeConversationId = conv.id
-  await app.syncMessagesSilently(conv.id)
+  activeUserId.value = conv.other_user?.id || null
+  await app.syncMessagesSilently()
   app.ensureMessagePolling()
   scrollToBottom()
 }
 
 async function handleSend() {
   const text = draft.value.trim()
-  if (!text || !app.activeConversationId) return
+  if (!text || !app.activeConversationId || sending.value) return
+  const conv = app.conversations.find(c => c.id === app.activeConversationId)
+  const receiverId = conv?.other_user?.id
+  if (!receiverId) return
+  sending.value = true
   try {
     draft.value = ''
-    await messagesApi.send(app.activeConversationId, { body: text })
-    await app.syncMessagesSilently(app.activeConversationId)
+    const data = await messagesApi.send({ receiver_id: receiverId, body: text })
+    if (data.sent_message && data.thread_id === app.activeConversationId) {
+      const alreadyShown = app.threadMessages.some((message) => message.id === data.sent_message.id)
+      if (!alreadyShown) app.threadMessages.push(data.sent_message)
+    }
+    scrollToBottom()
+    await app.syncMessagesSilently()
     scrollToBottom()
   } catch (error) {
+    draft.value = text
     app.setStatus(error.message, 'error')
+  } finally {
+    sending.value = false
   }
 }
 

@@ -1,7 +1,5 @@
 <template>
-  <LoadingSpinner v-if="loading" />
-
-  <div v-else-if="!app.currentClassId" class="surface empty-surface">
+  <div v-if="!app.currentClassId" class="surface empty-surface">
     <SectionTitle title="暂无班级" />
     <p class="empty-copy">先在班级页创建或加入班级，再使用知识库。</p>
     <button class="primary-btn" @click="$router.push({ name: 'classes' })">进入班级页</button>
@@ -32,11 +30,11 @@
     <div class="rag-right-shell">
       <article class="surface section-shell rag-chat-panel">
         <div class="rag-chat-header">
-          <div>
+          <div class="rag-chat-title">
             <span class="eyebrow">知识库问答</span>
             <h4>基于课件知识回答</h4>
           </div>
-          <span class="soft-badge">GLM 在线</span>
+          <span class="soft-badge rag-model-badge">{{ modelBadgeText }}</span>
         </div>
         <div class="ai-assistant-toolbar">
           <div class="suggestion-row">
@@ -67,7 +65,12 @@
               <textarea id="rag-question" v-model="app.ragDraft" placeholder="输入你的问题"></textarea>
             </div>
             <div class="button-row prompt-actions">
-              <button class="ghost-btn" type="button" @click="clearRag">清空记录</button>
+              <button
+                class="ghost-btn"
+                type="button"
+                :disabled="app.ragLoading || !app.ragMessages.length"
+                @click="clearRag"
+              >清除问答记录</button>
               <button class="primary-btn send-btn" type="submit" :disabled="app.ragLoading">
                 {{ app.ragLoading ? '生成中...' : '发送问题' }}
               </button>
@@ -80,11 +83,10 @@
 </template>
 
 <script setup>
-import { ref, onMounted, watch, nextTick } from 'vue'
+import { computed, onMounted, ref, nextTick, watch } from 'vue'
 import { useAuthStore } from '../store/auth'
 import { useAppStore } from '../store/app'
 import { ragApi } from '../api'
-import LoadingSpinner from '../components/LoadingSpinner.vue'
 import SectionTitle from '../components/SectionTitle.vue'
 import EmptyState from '../components/EmptyState.vue'
 import AiOnboarding from '../components/AiOnboarding.vue'
@@ -92,8 +94,9 @@ import RagChatBubble from '../components/RagChatBubble.vue'
 
 const auth = useAuthStore()
 const app = useAppStore()
-const loading = ref(true)
 const ragStream = ref(null)
+const modelName = ref('')
+const modelBadgeText = computed(() => `${modelName.value || 'AI 模型'} 在线`)
 
 const ragSuggestions = [
   '请总结课程的核心知识点。',
@@ -101,35 +104,72 @@ const ragSuggestions = [
   '根据课件内容，有什么学习建议？',
 ]
 
-async function load() {
-  loading.value = true
+async function loadRagStatus() {
+  if (!app.currentClassId) return
   try {
     const data = await ragApi.status({ class_id: app.currentClassId })
-    app.ragIndexStatus = data.status || 'not_built'
+    app.ragIndexStatus = data.status
+    modelName.value = data.model_name || ''
   } catch (error) {
     app.setStatus(error.message, 'error')
   }
-  loading.value = false
+}
+
+async function loadRagMessages() {
+  if (!app.currentClassId) {
+    app.ragMessages = []
+    return
+  }
+  try {
+    const data = await ragApi.messages({ class_id: app.currentClassId })
+    app.ragMessages = data.messages || []
+    nextTick(() => {
+      if (ragStream.value) ragStream.value.scrollTop = ragStream.value.scrollHeight
+    })
+  } catch (error) {
+    app.setStatus(error.message, 'error')
+  }
+}
+
+function loadRagPage() {
+  loadRagStatus()
+  loadRagMessages()
 }
 
 async function buildIndex() {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 300000) // 5 min timeout for index building
   try {
-    app.setStatus('正在构建知识库索引...')
-    const data = await ragApi.index({ class_id: app.currentClassId })
-    app.ragIndexStatus = data.status || 'ready'
+    app.setStatus('正在构建知识库索引，首次需下载模型可能较慢...')
+    await ragApi.index({ class_id: app.currentClassId }, { signal: controller.signal })
+    app.ragIndexStatus = 'ready'
     app.setStatus('知识库索引已构建。')
   } catch (error) {
-    app.setStatus(error.message, 'error')
+    if (error.name === 'AbortError') {
+      app.setStatus('索引构建超时，请检查网络后重试。', 'error')
+    } else {
+      app.setStatus(error.message, 'error')
+    }
+  } finally {
+    clearTimeout(timer)
   }
 }
 
 async function refreshIndex() {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 300000)
   try {
     app.setStatus('正在刷新知识库索引...')
-    await ragApi.index({ class_id: app.currentClassId })
+    await ragApi.index({ class_id: app.currentClassId }, { signal: controller.signal })
     app.setStatus('知识库索引已刷新。')
   } catch (error) {
-    app.setStatus(error.message, 'error')
+    if (error.name === 'AbortError') {
+      app.setStatus('索引刷新超时。', 'error')
+    } else {
+      app.setStatus(error.message, 'error')
+    }
+  } finally {
+    clearTimeout(timer)
   }
 }
 
@@ -144,19 +184,26 @@ function setRagDraft(text) {
 async function handleRagQa() {
   const question = app.ragDraft.trim()
   if (!question) return
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 300000) // 5 min, first call downloads model
   try {
     app.ragLoading = true
     app.ragDraft = ''
-    const data = await ragApi.ask({ class_id: app.currentClassId, question })
-    app.ragLoading = false
+    const data = await ragApi.ask({ class_id: app.currentClassId, question }, { signal: controller.signal })
     app.ragMessages = data.messages || []
     nextTick(() => {
       if (ragStream.value) ragStream.value.scrollTop = ragStream.value.scrollHeight
     })
   } catch (error) {
-    app.ragLoading = false
     app.ragDraft = question
-    app.setStatus(error.message, 'error')
+    if (error.name === 'AbortError') {
+      app.setStatus('回答生成超时，请重试。', 'error')
+    } else {
+      app.setStatus(error.message, 'error')
+    }
+  } finally {
+    clearTimeout(timer)
+    app.ragLoading = false
   }
 }
 
@@ -171,6 +218,6 @@ async function clearRag() {
   }
 }
 
-onMounted(load)
-watch(() => app.currentClassId, load)
+onMounted(loadRagPage)
+watch(() => app.currentClassId, loadRagPage)
 </script>

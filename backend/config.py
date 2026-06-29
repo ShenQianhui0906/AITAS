@@ -57,7 +57,7 @@ STATIC_DIR = ROOT_DIR / "frontend" / "dist"
 # ---------------------------------------------------------------------------
 # Environment variables from ENV file
 # ---------------------------------------------------------------------------
-_ENV_FILE = ROOT_DIR / "ENV"
+_ENV_FILE = ROOT_DIR / ".ENV"
 if _ENV_FILE.exists():
     with _ENV_FILE.open(encoding="utf-8") as _f:
         for _line in _f:
@@ -70,15 +70,23 @@ if _ENV_FILE.exists():
 # ---------------------------------------------------------------------------
 # AI / LLM settings
 # ---------------------------------------------------------------------------
-BIGMODEL_API_URL = os.environ.get(
-    "BIGMODEL_API_URL",
-    "https://open.bigmodel.cn/api/paas/v4/chat/completions",
-).strip() or "https://open.bigmodel.cn/api/paas/v4/chat/completions"
+API_URL = os.environ.get(
+    "API_URL",
+    "https://api.deepseek.com/chat/completions",
+).strip() or "https://api.deepseek.com/chat/completions"
 
-BIGMODEL_MODEL = os.environ.get("BIGMODEL_MODEL", "glm-4.7-flash").strip() or "glm-4.7-flash"
+MODEL_NAME = os.environ.get("MODEL_NAME", "deepseek-chat").strip() or "deepseek-chat"
 
 MAX_AI_CONTEXT_CHARS = 12000
 MAX_AI_HISTORY_MESSAGES = 8
+
+# ---------------------------------------------------------------------------
+# Assignment submission limits
+# ---------------------------------------------------------------------------
+MAX_ASSIGNMENT_FILE_BYTES = 20 * 1024 * 1024
+MAX_ASSIGNMENT_FILES = 10
+MAX_ASSIGNMENT_REQUEST_BYTES = 60 * 1024 * 1024
+INLINE_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
 
 # ---------------------------------------------------------------------------
 # Admin defaults

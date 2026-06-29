@@ -76,3 +76,47 @@ def clear_rag_messages(conn: sqlite3.Connection, class_id: int, user_id: int):
         (class_id, user_id),
     )
     conn.commit()
+
+
+# ---- Homepage Agent (per-class) ----
+
+def list_agent_messages(
+    conn: sqlite3.Connection, class_id: int, user_id: int, max_messages: int = 50
+) -> list[dict]:
+    rows = conn.execute(
+        "SELECT * FROM ("
+        "SELECT id, class_id, user_id, role, content, intent, sources, created_at "
+        "FROM agent_chat_messages WHERE class_id = ? AND user_id = ? "
+        "ORDER BY id DESC LIMIT ?"
+        ") ORDER BY id ASC",
+        (class_id, user_id, max_messages),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def add_agent_message(
+    conn: sqlite3.Connection,
+    class_id: int,
+    user_id: int,
+    role: str,
+    content: str,
+    intent: str,
+    sources: str = "[]",
+) -> dict:
+    cursor = conn.execute(
+        "INSERT INTO agent_chat_messages "
+        "(class_id, user_id, role, content, intent, sources, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (class_id, user_id, role, content, intent, sources, now_iso()),
+    )
+    row = conn.execute(
+        "SELECT * FROM agent_chat_messages WHERE id = ?", (cursor.lastrowid,)
+    ).fetchone()
+    return dict(row)
+
+
+def clear_agent_messages(conn: sqlite3.Connection, class_id: int, user_id: int):
+    conn.execute(
+        "DELETE FROM agent_chat_messages WHERE class_id = ? AND user_id = ?",
+        (class_id, user_id),
+    )

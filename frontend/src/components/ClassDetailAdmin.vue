@@ -5,7 +5,7 @@
         <div class="teacher-class-current-copy">
           <span class="eyebrow">当前班级</span>
           <h3>{{ currentClass.name || '尚未选择班级' }}</h3>
-          <p v-if="currentClass.description">{{ currentClass.description }}</p>
+          <p>{{ currentClass.description || '暂无班级说明' }}</p>
         </div>
         <div class="teacher-class-meta-strip">
           <article class="teacher-mini-stat">
@@ -26,10 +26,16 @@
 
     <div class="teacher-class-board admin-class-board">
       <!-- Pending Requests -->
-      <article class="surface section-shell teacher-class-panel">
-        <SectionTitle :title="`${currentClass.name} · 入班申请`" />
+      <article class="surface section-shell teacher-class-panel teacher-request-panel">
+        <div class="teacher-panel-heading">
+          <div>
+            <h4>入班申请</h4>
+            <p>审核学生提交的加入申请</p>
+          </div>
+          <span class="count-badge">{{ membersData?.pending_requests?.length || 0 }}</span>
+        </div>
         <div class="list-stack separated-list teacher-scroll-list">
-          <EmptyState v-if="!membersData?.pending_requests?.length" message="当前班级暂无待审核申请" />
+          <EmptyState v-if="!membersData?.pending_requests?.length" class="teacher-compact-empty" message="暂无待审核申请" />
           <article v-for="r in membersData?.pending_requests" :key="r.id" class="list-row entity-row">
             <div class="row-main">
               <strong>{{ r.display_name }}</strong>
@@ -45,10 +51,16 @@
       </article>
 
       <!-- Members -->
-      <article class="surface section-shell teacher-class-panel">
-        <SectionTitle :title="`${currentClass.name} · 班级成员`" />
+      <article class="surface section-shell teacher-class-panel teacher-members-panel">
+        <div class="teacher-panel-heading">
+          <div>
+            <h4>班级成员</h4>
+            <p>{{ currentClass.name }}的教师与学生</p>
+          </div>
+          <span class="count-badge">{{ membersData?.members?.length || 0 }}</span>
+        </div>
         <div class="list-stack separated-list teacher-scroll-list">
-          <EmptyState v-if="!membersData?.members?.length" message="当前班级还没有成员" />
+          <EmptyState v-if="!membersData?.members?.length" class="teacher-compact-empty" message="当前班级还没有成员" />
           <article v-for="m in membersData?.members" :key="m.id" class="list-row entity-row">
             <div class="row-main">
               <strong>{{ m.display_name }}</strong>
@@ -63,10 +75,16 @@
       </article>
 
       <!-- Available Students -->
-      <article class="surface section-shell teacher-class-panel">
-        <SectionTitle title="候选学生" />
+      <article class="surface section-shell teacher-class-panel teacher-candidates-panel">
+        <div class="teacher-panel-heading">
+          <div>
+            <h4>候选学生</h4>
+            <p>将未入班学生直接加入当前班级</p>
+          </div>
+          <span class="count-badge">{{ membersData?.available_students?.length || 0 }}</span>
+        </div>
         <div class="list-stack separated-list teacher-scroll-list">
-          <EmptyState v-if="!membersData?.available_students?.length" message="没有可加入的学生" />
+          <EmptyState v-if="!membersData?.available_students?.length" class="teacher-compact-empty" message="没有可加入的学生" />
           <article v-for="s in membersData?.available_students" :key="s.id" class="list-row entity-row">
             <div class="row-main">
               <strong>{{ s.display_name }}</strong>
